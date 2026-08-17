@@ -1,0 +1,22 @@
+# Secrets — never bake into an image layer
+.env
+.env.*
+!.env.example
+
+# Local state / caches (transcript content must never ship in an image)
+data/raw/
+datasets/
+.venv/
+dist/
+build/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# VCS + internal notes
+.git/
+.gitignore
+CLAUDE.md
+DECISIONS.md

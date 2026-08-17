@@ -1,0 +1,27 @@
+# Internal working notes (not part of the public repo)
+CLAUDE.md
+DECISIONS.md
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+
+# Ingestion cache
+data/raw/*.vtt
+
+# Dataset bundles — local artifacts only, transcript content is never committed
+datasets/
+
+# OS
+.DS_Store
+
+# Build artifacts
+dist/
+build/

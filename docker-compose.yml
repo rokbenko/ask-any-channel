@@ -1,0 +1,45 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: aac
+      # Set POSTGRES_PASSWORD in .env (see .env.example) — and keep DATABASE_URL in sync.
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aac}
+      POSTGRES_DB: askanychannel
+    ports:
+      # Loopback only: Docker port publishing bypasses host firewalls (ufw etc.), so
+      # binding 0.0.0.0 would expose the DB to the network on any VPS. The worker reaches
+      # Postgres over the compose network and doesn't need this port at all.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aac -d askanychannel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build: .
+    command: python -m core.worker.daemon
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://aac:${POSTGRES_PASSWORD:-aac}@postgres:5432/askanychannel
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./data:/app/data
+      - ./datasets:/app/datasets
+    restart: unless-stopped
+
+  ui:
+    build: .
+    command: ["true"]
+    profiles: ["ui"]
+    depends_on:
+      - postgres
+
+volumes:
+  pgdata:

@@ -1,0 +1,70 @@
+"""Process-wide settings, loaded from the environment once and cached.
+
+This is the only module (besides core/credentials.py, which reads from this) allowed to
+call os.getenv directly. Everything else goes through get_settings() or CredentialsProvider.
+"""
+
+import os
+from dataclasses import dataclass
+from functools import lru_cache
+
+from dotenv import load_dotenv
+
+from core.constants import RAW_CAPTIONS_DIR
+
+VALID_INSTANCE_MODES = ("selfhost", "cloud")
+
+# Vendor SDKs (openai, anthropic) read these env vars directly, independent of whatever we
+# pass as constructor kwargs. A blank-but-present value in .env (e.g. "OPENAI_BASE_URL=")
+# is picked up as a literal empty string by those SDKs instead of falling back to their own
+# default — so a placeholder left blank in .env silently breaks every API call. Scrubbing
+# blank values here means our own get_settings() output and every downstream SDK's own env
+# lookup agree: "unset" for both, never "present but empty" for one and "unset" for the other.
+_ENV_VARS_TO_SCRUB_IF_BLANK = (
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+)
+
+
+@dataclass(frozen=True)
+class Settings:
+    instance_mode: str
+    database_url: str
+    openai_api_key: str | None
+    openai_base_url: str | None
+    anthropic_api_key: str | None
+    raw_captions_dir: str
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+@lru_cache
+def get_settings() -> Settings:
+    load_dotenv()
+
+    for var in _ENV_VARS_TO_SCRUB_IF_BLANK:
+        if os.environ.get(var) == "":
+            del os.environ[var]
+
+    instance_mode = os.getenv("INSTANCE_MODE", "selfhost")
+    if instance_mode not in VALID_INSTANCE_MODES:
+        raise ConfigError(
+            f"INSTANCE_MODE must be one of {VALID_INSTANCE_MODES}, got {instance_mode!r}"
+        )
+
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        raise ConfigError("DATABASE_URL is required")
+
+    return Settings(
+        instance_mode=instance_mode,
+        database_url=database_url,
+        openai_api_key=os.getenv("OPENAI_API_KEY") or None,
+        openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
+        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
+        raw_captions_dir=os.getenv("RAW_CAPTIONS_DIR") or RAW_CAPTIONS_DIR,
+    )
