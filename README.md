@@ -4,8 +4,8 @@ Turn any YouTube channel into a grounded AI chatbot. Paste a channel URL, it ing
 channel's video transcripts, and you get answers cited to the exact video and timestamp
 (`https://www.youtube.com/watch?v={id}&t={seconds}s`).
 
-> **Status:** Phase 1 — ingestion pipeline, pgvector search, and dataset bundles, all via
-> the `aac` CLI. The Streamlit chat UI lands in Phase 2 (`apps/ui` is currently a stub).
+> **Status:** Phase 2 — ingestion pipeline, pgvector search, dataset bundles, and the `aac`
+> CLI (Phase 1), plus a streaming Streamlit chat UI with cited answers (Phase 2).
 
 ## Prerequisites
 
@@ -31,25 +31,24 @@ no separate migration step.
 ## Architecture
 
 ```
-            ┌────────────┐
-  aac CLI → │            │
-            │   core/    │ ──▶  OpenAI (embeddings)
-  worker  → │            │
-            └─────┬──────┘
-                  │
-                  ▼
-        Postgres 16 + pgvector
-   (channels, videos, chunks, jobs)
+               ┌────────────┐
+  aac CLI   →  │            │ ──▶  OpenAI (embeddings)
+  worker    →  │   core/    │
+  Streamlit →  │            │ ──▶  OpenAI or Anthropic (chat, per CHAT_PROVIDER)
+               └─────┬──────┘
+                     │
+                     ▼
+           Postgres 16 + pgvector
+  (channels, videos, chunks, jobs, chats, messages, usage)
 ```
 
-- **`core/`** — all logic: ingestion, chunking, retrieval, provider + credentials seams,
-  dataset bundling. The only package with business logic; everything else is a thin client
-  over it.
+- **`core/`** — all logic: ingestion, chunking, retrieval, chat orchestration + citation
+  parsing, provider + credentials seams, dataset bundling. The only package with business
+  logic; everything else is a thin client over it.
 - **`cli/`** — the `aac` Typer CLI (`ingest`, `search`, `status`, `dataset`, `registry`).
 - **`core/db/`** — connection pool plus plain numbered SQL migrations and a small
   dependency-light runner (applied lazily on the first database touch).
-- **`apps/ui/`** — Streamlit chat client (Phase 2+); imports `core` only, zero logic of
-  its own.
+- **`apps/ui/`** — Streamlit chat client; imports `core` only, zero logic of its own.
 - One database for everything: relational data, vectors (pgvector), and the ingestion job
   queue — no Pinecone, no Redis.
 
@@ -61,15 +60,16 @@ no separate migration step.
 │   ├── ingest/             # channel resolution, caption fetch, VTT parsing, chunking
 │   ├── dataset/            # local bundle build/load/validate + registry entries
 │   ├── db/                 # connection pool + numbered SQL migrations (applied lazily)
-│   ├── providers/          # LLMProvider seam (OpenAI today, Anthropic-ready)
+│   ├── providers/          # LLMProvider seam — OpenAI + Anthropic, chosen via CHAT_PROVIDER
 │   ├── store/              # VectorStore seam, pgvector implementation
 │   ├── search/             # retrieval
+│   ├── chat/               # grounded prompt, streaming answer, [n] citation parsing
 │   └── worker/             # polling daemon, shares pipeline code with the CLI
 ├── registry/channels.json  # community index of built dataset bundles (metadata only)
 ├── data/raw/               # cached .vtt captions (gitignored)
 ├── datasets/               # local dataset bundles (gitignored — see Dataset bundles)
-├── apps/ui/                # Streamlit chat client (Phase 2+, stub for now)
-└── tests/                  # pytest — parsing/chunking/bundle logic
+├── apps/ui/                # Streamlit chat client
+└── tests/                  # pytest — parsing/chunking/bundle/chat-orchestration logic
 ```
 
 ## CLI
@@ -99,18 +99,47 @@ embedding model — no transcript text) of channels the community has already bu
 for. After a build, `aac registry entry <handle>` prints the entry to add there in a PR, so
 others can find a channel worth re-ingesting themselves.
 
+## Chat
+
+Once a channel is ingested, chat with it in the Streamlit UI:
+
+```bash
+uv run streamlit run apps/ui/Home.py
+# or, via Docker:
+docker compose --profile ui up -d
+```
+
+Pick a channel from the sidebar, ask a question, and get a streamed answer with inline
+`[n]` citations — each links to the exact video + timestamp and expands to an embedded
+player that starts right there. Off-topic questions get an honest "the channel doesn't
+cover this" instead of an invented answer.
+
+`CHAT_PROVIDER` (`openai` or `anthropic`) picks which vendor answers chat turns;
+`CHAT_MODEL` overrides the default model for that provider. Embedding the question always
+goes through OpenAI regardless of `CHAT_PROVIDER`, so `OPENAI_API_KEY` is required either
+way — set `ANTHROPIC_API_KEY` too if `CHAT_PROVIDER=anthropic`.
+
+The UI has **no login** in self-host mode and every question is billed to *your* API keys, so
+it listens on `localhost` only (`.streamlit/config.toml`; the compose service publishes on
+`127.0.0.1:8501` for the same reason). Put it behind a reverse proxy with authentication if
+you need it reachable from elsewhere. Streamlit's usage telemetry is switched off there too.
+
+*(screenshot coming soon)*
+
 ## Configuration
 
-All settings come from `.env` (copy `.env.example` to start) via `core/credentials.py` — no
-other module reads environment variables directly.
+All settings come from `.env` (copy `.env.example` to start) via `core/config.py` (and
+`core/credentials.py` for API keys) — no other module reads environment variables directly.
 
 | Variable | Purpose |
 | --- | --- |
 | `INSTANCE_MODE` | `selfhost` (default, no auth/quotas) or `cloud` (future, not built). |
 | `POSTGRES_PASSWORD` | Password for the compose Postgres service (default `aac`). Change it for anything beyond a laptop, and keep `DATABASE_URL` in sync. |
 | `DATABASE_URL` | Postgres connection string. The compose Postgres service is published on **`127.0.0.1:5432` only** — Docker port publishing bypasses host firewalls, so it's deliberately not reachable from the network. |
-| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | Required for embeddings; `OPENAI_BASE_URL` lets you point at any OpenAI-compatible endpoint. |
-| `ANTHROPIC_API_KEY` | Reserved for Phase 2 chat orchestration. |
+| `OPENAI_API_KEY` / `OPENAI_BASE_URL` | Required for embeddings, always — including for chat, since the query is embedded regardless of `CHAT_PROVIDER`. `OPENAI_BASE_URL` lets you point at any OpenAI-compatible endpoint. |
+| `ANTHROPIC_API_KEY` / `ANTHROPIC_BASE_URL` | Required only when `CHAT_PROVIDER=anthropic`. |
+| `CHAT_PROVIDER` | `openai` (default) or `anthropic` — which vendor answers chat turns. |
+| `CHAT_MODEL` | Overrides the default chat model for the configured provider. Leave blank to use the built-in default. |
 
 ## Development
 

@@ -36,10 +36,22 @@ services:
 
   ui:
     build: .
-    command: ["true"]
+    # 0.0.0.0 here overrides .streamlit/config.toml's localhost default — correct inside the
+    # container, since the port below is only published on the host's loopback.
+    command: ["streamlit", "run", "apps/ui/Home.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://aac:${POSTGRES_PASSWORD:-aac}@postgres:5432/askanychannel
+      STREAMLIT_BROWSER_GATHER_USAGE_STATS: "false"
+    ports:
+      # Loopback only, same rationale as postgres above — wider exposure is a P4 reverse-proxy
+      # concern, not something compose port publishing should do directly.
+      - "127.0.0.1:8501:8501"
     profiles: ["ui"]
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
 
 volumes:
   pgdata:

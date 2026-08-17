@@ -7,12 +7,16 @@ from core.dataset.bundle import ChunkRecord, VideoRecord, write_bundle
 from core.dataset.manifest import ChannelMeta, ChunkingParams, EmbeddingMeta, Manifest
 from core.dataset.validate import validate_bundle
 
+# Real-shaped ids: validate_bundle rejects anything that isn't 11 / "UC"+22 url-safe chars.
+_CHANNEL_ID = "UC" + "x" * 22
+_VIDEO_ID = "abcdefghijk"
+
 
 def _valid_manifest() -> Manifest:
     return Manifest(
         schema_version=1,
         channel=ChannelMeta(
-            yt_channel_id="UC_test", handle="@test", title="Test Channel", thumbnail_url=None
+            yt_channel_id=_CHANNEL_ID, handle="@test", title="Test Channel", thumbnail_url=None
         ),
         snapshot_date="2026-08-16T00:00:00+00:00",
         chunking=ChunkingParams(target_tokens=400, overlap_ratio=0.15, encoding="cl100k_base"),
@@ -29,7 +33,7 @@ def _valid_manifest() -> Manifest:
 def _valid_videos() -> list[VideoRecord]:
     return [
         VideoRecord(
-            yt_video_id="vid001",
+            yt_video_id=_VIDEO_ID,
             title="Video One",
             duration_s=10,
             view_count=1000,
@@ -42,18 +46,18 @@ def _valid_videos() -> list[VideoRecord]:
 def _valid_chunks() -> list[ChunkRecord]:
     return [
         ChunkRecord(
-            yt_video_id="vid001", idx=0, text="hello", t_start_s=0.0, t_end_s=2.0, token_count=1
+            yt_video_id=_VIDEO_ID, idx=0, text="hello", t_start_s=0.0, t_end_s=2.0, token_count=1
         ),
         ChunkRecord(
-            yt_video_id="vid001", idx=1, text="world", t_start_s=2.0, t_end_s=4.0, token_count=1
+            yt_video_id=_VIDEO_ID, idx=1, text="world", t_start_s=2.0, t_end_s=4.0, token_count=1
         ),
     ]
 
 
 def _valid_embeddings() -> dict[tuple[str, int], list[float]]:
     return {
-        ("vid001", 0): [0.1, 0.2, 0.3, 0.4],
-        ("vid001", 1): [0.5, 0.6, 0.7, 0.8],
+        (_VIDEO_ID, 0): [0.1, 0.2, 0.3, 0.4],
+        (_VIDEO_ID, 1): [0.5, 0.6, 0.7, 0.8],
     }
 
 
@@ -78,7 +82,7 @@ def test_duplicate_chunk_idx_is_flagged(tmp_path):
 
     corrupted = pa.table(
         {
-            "yt_video_id": ["vid001", "vid001"],
+            "yt_video_id": [_VIDEO_ID, _VIDEO_ID],
             "idx": [0, 0],  # duplicate idx
             "text": ["hello", "hello again"],
             "t_start_s": [0.0, 1.0],
@@ -109,7 +113,7 @@ def test_embedding_dimension_mismatch_is_flagged(tmp_path):
 
     wrong_dims = pa.table(
         {
-            "yt_video_id": ["vid001", "vid001"],
+            "yt_video_id": [_VIDEO_ID, _VIDEO_ID],
             "idx": [0, 1],
             "embedding": pa.array([[0.1, 0.2], [0.3, 0.4]], type=pa.list_(pa.float32())),
         }
@@ -120,12 +124,33 @@ def test_embedding_dimension_mismatch_is_flagged(tmp_path):
     assert any("dim" in e for e in errors)
 
 
+def test_malformed_video_id_is_flagged(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "bad-id")
+
+    # A crafted id that would break out of a markdown link if it reached the UI unchecked.
+    injected = "x) [Sign in](https://evil.example"
+    corrupted = pa.table(
+        {
+            "yt_video_id": [injected, injected],
+            "idx": [0, 1],
+            "text": ["hello", "world"],
+            "t_start_s": [0.0, 2.0],
+            "t_end_s": [2.0, 4.0],
+            "token_count": [1, 1],
+        }
+    )
+    pq.write_table(corrupted, out_dir / "chunks.parquet")
+
+    errors = validate_bundle(out_dir)
+    assert any("Malformed yt_video_id" in e for e in errors)
+
+
 def test_chunk_timestamp_beyond_video_duration_is_flagged(tmp_path):
     out_dir = _build_valid_bundle(tmp_path / "bad-timestamp")
 
     corrupted = pa.table(
         {
-            "yt_video_id": ["vid001", "vid001"],
+            "yt_video_id": [_VIDEO_ID, _VIDEO_ID],
             "idx": [0, 1],
             "text": ["hello", "world"],
             "t_start_s": [0.0, 2.0],

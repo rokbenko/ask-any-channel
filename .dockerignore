@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.streamlit/secrets.toml
 
 # Local state / caches (transcript content must never ship in an image)
 data/raw/

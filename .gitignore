@@ -10,8 +10,12 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
-# Env / secrets
+# Env / secrets — .env.* covers .env.local/.env.prod-style variants forks tend to create;
+# the committed template is explicitly re-allowed. Git history is forever.
 .env
+.env.*
+!.env.example
+.streamlit/secrets.toml
 
 # Ingestion cache
 data/raw/*.vtt

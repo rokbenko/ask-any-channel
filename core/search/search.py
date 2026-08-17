@@ -1,5 +1,7 @@
 """Channel-scoped semantic search over ingested transcript chunks."""
 
+from urllib.parse import quote
+
 from core.providers.base import LLMProvider
 from core.store.base import SearchResult, VectorStore
 
@@ -25,4 +27,9 @@ def search_channel(
 
 
 def build_timestamped_url(yt_video_id: str, t_start_s: float) -> str:
-    return f"https://www.youtube.com/watch?v={yt_video_id}&t={int(round(t_start_s))}s"
+    # `quote(..., safe="")` is a no-op for a real 11-char YouTube id, but ids can arrive from
+    # untrusted community bundles and this URL is rendered as a markdown link — never let a
+    # crafted id break out of the URL. validate_bundle rejects malformed ids up front too.
+    return (
+        f"https://www.youtube.com/watch?v={quote(yt_video_id, safe='')}&t={int(round(t_start_s))}s"
+    )

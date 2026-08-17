@@ -1,0 +1,18 @@
+# Streamlit defaults tuned for a self-hosted, single-user tool that spends YOUR API keys.
+#
+# address: Streamlit's own default is 0.0.0.0 (all interfaces). The chat UI has no login in
+# selfhost mode, so that would let anyone on your LAN — or the internet, on a VPS without a
+# firewall — run chat turns billed to your OpenAI/Anthropic key. Loopback by default; the
+# docker-compose `ui` service overrides this on the command line (0.0.0.0 inside the container
+# is fine because compose only publishes the port on 127.0.0.1). Put a reverse proxy with auth
+# in front if you need it reachable elsewhere.
+#
+# headless: no browser auto-launch, no first-run email prompt, no PyPI version check.
+# gatherUsageStats: don't report usage telemetry to Streamlit/Snowflake.
+
+[server]
+address = "localhost"
+headless = true
+
+[browser]
+gatherUsageStats = false

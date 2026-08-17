@@ -28,3 +28,6 @@ class CredentialsProvider:
         if not self._settings.anthropic_api_key:
             raise CredentialError("ANTHROPIC_API_KEY is not set")
         return self._settings.anthropic_api_key
+
+    def anthropic_base_url(self) -> str | None:
+        return self._settings.anthropic_base_url

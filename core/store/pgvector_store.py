@@ -10,14 +10,18 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from core.db import get_connection
-from core.models import Channel, IngestJob, Video
+from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
 from core.store.base import (
     ChannelStatusSummary,
+    ChannelSummary,
+    ChatSummary,
     ChunkInput,
     SearchResult,
     StatusSummary,
     VideoStatusCount,
 )
+
+_CHAT_TITLE_MAX_CHARS = 60
 
 
 class PgVectorStore:
@@ -243,3 +247,135 @@ class PgVectorStore:
             for ch in channels
         ]
         return StatusSummary(channels=channel_summaries, recent_jobs=recent_jobs)
+
+    def get_channel(self, channel_id: UUID) -> Channel | None:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM channels WHERE id = %s", (channel_id,))
+            row = cur.fetchone()
+        return Channel(**row) if row else None
+
+    def list_channels(self) -> list[ChannelSummary]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT c.*,
+                       COUNT(v.id) AS video_count,
+                       COUNT(v.id) FILTER (WHERE v.status = 'embedded') AS embedded_video_count
+                FROM channels c
+                LEFT JOIN videos v ON v.channel_id = c.id
+                GROUP BY c.id
+                ORDER BY c.created_at
+                """
+            )
+            rows = cur.fetchall()
+
+        channel_fields = Channel.__dataclass_fields__
+        return [
+            ChannelSummary(
+                channel=Channel(**{f: row[f] for f in channel_fields}),
+                video_count=row["video_count"],
+                embedded_video_count=row["embedded_video_count"],
+            )
+            for row in rows
+        ]
+
+    def create_chat(self, *, channel_id: UUID) -> Chat:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("INSERT INTO chats (channel_id) VALUES (%s) RETURNING *", (channel_id,))
+            row = cur.fetchone()
+        return Chat(**row)
+
+    def get_chat(self, chat_id: UUID) -> Chat | None:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM chats WHERE id = %s", (chat_id,))
+            row = cur.fetchone()
+        return Chat(**row) if row else None
+
+    def list_chats(self, *, channel_id: UUID, limit: int = 50) -> list[ChatSummary]:
+        # Inner (not left) lateral join: a chat with no user message yet — one whose first turn
+        # failed before anything was persisted — is not listed. Rather than guaranteeing such
+        # rows never exist, they're simply invisible, and cascade away with the channel.
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT c.id, c.channel_id, c.created_at, fm.content AS title
+                FROM chats c
+                JOIN LATERAL (
+                    SELECT content FROM messages m
+                    WHERE m.chat_id = c.id AND m.role = 'user'
+                    ORDER BY m.created_at ASC
+                    LIMIT 1
+                ) fm ON true
+                WHERE c.channel_id = %(channel_id)s
+                ORDER BY c.created_at DESC
+                LIMIT %(limit)s
+                """,
+                {"channel_id": channel_id, "limit": limit},
+            )
+            rows = cur.fetchall()
+
+        summaries = []
+        for row in rows:
+            title = row["title"]
+            if title and len(title) > _CHAT_TITLE_MAX_CHARS:
+                title = title[: _CHAT_TITLE_MAX_CHARS - 1].rstrip() + "…"
+            summaries.append(
+                ChatSummary(
+                    id=row["id"],
+                    channel_id=row["channel_id"],
+                    title=title,
+                    created_at=row["created_at"],
+                )
+            )
+        return summaries
+
+    def list_messages(self, chat_id: UUID) -> list[Message]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT * FROM messages WHERE chat_id = %s ORDER BY created_at ASC", (chat_id,)
+            )
+            rows = cur.fetchall()
+        return [Message(**row) for row in rows]
+
+    def add_message(
+        self,
+        *,
+        chat_id: UUID,
+        role: str,
+        content: str,
+        citations: list[dict] | None = None,
+    ) -> Message:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                INSERT INTO messages (chat_id, role, content, citations)
+                VALUES (%s, %s, %s, %s)
+                RETURNING *
+                """,
+                (chat_id, role, content, Jsonb(citations or [])),
+            )
+            row = cur.fetchone()
+        return Message(**row)
+
+    def record_usage_event(
+        self,
+        *,
+        channel_id: UUID | None,
+        chat_id: UUID | None,
+        model: str | None,
+        tokens_in: int | None,
+        tokens_out: int | None,
+        est_cost_usd: float | None,
+    ) -> UsageEvent:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                INSERT INTO usage_events
+                    (channel_id, chat_id, model, tokens_in, tokens_out, est_cost_usd)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                RETURNING *
+                """,
+                (channel_id, chat_id, model, tokens_in, tokens_out, est_cost_usd),
+            )
+            row = cur.fetchone()
+        return UsageEvent(**row)

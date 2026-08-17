@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from core.models import Channel, IngestJob, Video
+from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
 
 
 @dataclass
@@ -47,6 +47,21 @@ class ChannelStatusSummary:
 class StatusSummary:
     channels: list[ChannelStatusSummary]
     recent_jobs: list[IngestJob]
+
+
+@dataclass
+class ChannelSummary:
+    channel: Channel
+    video_count: int
+    embedded_video_count: int  # status = 'embedded' — actually searchable/answerable
+
+
+@dataclass
+class ChatSummary:
+    id: UUID
+    channel_id: UUID
+    title: str | None  # derived from the first user message, truncated ~60 chars
+    created_at: datetime
 
 
 class VectorStore(Protocol):
@@ -104,3 +119,35 @@ class VectorStore(Protocol):
     def get_channel_by_handle_or_id(self, ref: str) -> Channel | None: ...
 
     def status_summary(self) -> StatusSummary: ...
+
+    def get_channel(self, channel_id: UUID) -> Channel | None: ...
+
+    def list_channels(self) -> list[ChannelSummary]: ...
+
+    def create_chat(self, *, channel_id: UUID) -> Chat: ...
+
+    def get_chat(self, chat_id: UUID) -> Chat | None: ...
+
+    def list_chats(self, *, channel_id: UUID, limit: int = 50) -> list[ChatSummary]: ...
+
+    def list_messages(self, chat_id: UUID) -> list[Message]: ...
+
+    def add_message(
+        self,
+        *,
+        chat_id: UUID,
+        role: str,
+        content: str,
+        citations: list[dict] | None = None,
+    ) -> Message: ...
+
+    def record_usage_event(
+        self,
+        *,
+        channel_id: UUID | None,
+        chat_id: UUID | None,
+        model: str | None,
+        tokens_in: int | None,
+        tokens_out: int | None,
+        est_cost_usd: float | None,
+    ) -> UsageEvent: ...

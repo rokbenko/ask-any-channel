@@ -2,6 +2,7 @@
 row counts, embedding dimensions, and timestamp sanity. Used by `aac dataset validate` and
 as the pre-flight check before `dataset load` decides whether bundled embeddings are usable."""
 
+import re
 from pathlib import Path
 
 from core.constants import DATASET_SCHEMA_VERSION
@@ -14,6 +15,14 @@ from core.dataset.bundle import read_bundle
 # generous: 50% plus a flat 30s buffer.
 _DURATION_SLACK_RATIO = 1.5
 _DURATION_SLACK_BASE_S = 30.0
+
+# Bundles are untrusted input (they can come from strangers via the registry model), and these
+# ids/titles end up in citation URLs, markdown links, and widget labels in the chat UI. Pin the
+# shapes YouTube actually uses so a crafted value can't smuggle markdown or URL syntax through:
+# video ids are exactly 11 chars of [A-Za-z0-9_-]; channel ids are "UC" + 22 of the same.
+_YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
+_YT_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+_MAX_TITLE_CHARS = 300
 
 
 def validate_bundle(path: Path) -> list[str]:
@@ -45,6 +54,29 @@ def validate_bundle(path: Path) -> list[str]:
             f"manifest.chunk_count ({manifest.chunk_count}) != actual chunks.parquet rows "
             f"({len(bundle.chunks)})"
         )
+
+    if not _YT_CHANNEL_ID_RE.match(manifest.channel.yt_channel_id):
+        errors.append(
+            f"manifest.channel.yt_channel_id {manifest.channel.yt_channel_id!r} is not a "
+            "YouTube channel id (expected 'UC' + 22 chars of [A-Za-z0-9_-])"
+        )
+    if manifest.channel.title and len(manifest.channel.title) > _MAX_TITLE_CHARS:
+        errors.append(f"manifest.channel.title exceeds {_MAX_TITLE_CHARS} characters")
+
+    bad_video_ids = sorted(
+        {v.yt_video_id for v in bundle.videos if not _YT_VIDEO_ID_RE.match(v.yt_video_id)}
+        | {c.yt_video_id for c in bundle.chunks if not _YT_VIDEO_ID_RE.match(c.yt_video_id)}
+    )
+    if bad_video_ids:
+        errors.append(
+            "Malformed yt_video_id values (expected 11 chars of [A-Za-z0-9_-]): "
+            f"{bad_video_ids[:5]}"
+        )
+    long_titles = [
+        v.yt_video_id for v in bundle.videos if v.title and len(v.title) > _MAX_TITLE_CHARS
+    ]
+    if long_titles:
+        errors.append(f"Video titles exceed {_MAX_TITLE_CHARS} characters: {long_titles[:5]}")
 
     seen_ids: set[tuple[str, int]] = set()
     duplicates: set[tuple[str, int]] = set()

@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from core.constants import RAW_CAPTIONS_DIR
 
 VALID_INSTANCE_MODES = ("selfhost", "cloud")
+VALID_CHAT_PROVIDERS = ("openai", "anthropic")
 
 # Vendor SDKs (openai, anthropic) read these env vars directly, independent of whatever we
 # pass as constructor kwargs. A blank-but-present value in .env (e.g. "OPENAI_BASE_URL=")
@@ -35,6 +36,9 @@ class Settings:
     openai_api_key: str | None
     openai_base_url: str | None
     anthropic_api_key: str | None
+    anthropic_base_url: str | None
+    chat_provider: str
+    chat_model: str | None  # None means "use the provider's default" from core/constants.py
     raw_captions_dir: str
 
 
@@ -60,11 +64,22 @@ def get_settings() -> Settings:
     if not database_url:
         raise ConfigError("DATABASE_URL is required")
 
+    # `or`, not a getenv default: a present-but-blank `CHAT_PROVIDER=` line (the .env.example
+    # shape) must mean "default", not "invalid value ''" — same lesson as the SDK-var scrubbing.
+    chat_provider = os.getenv("CHAT_PROVIDER") or "openai"
+    if chat_provider not in VALID_CHAT_PROVIDERS:
+        raise ConfigError(
+            f"CHAT_PROVIDER must be one of {VALID_CHAT_PROVIDERS}, got {chat_provider!r}"
+        )
+
     return Settings(
         instance_mode=instance_mode,
         database_url=database_url,
         openai_api_key=os.getenv("OPENAI_API_KEY") or None,
         openai_base_url=os.getenv("OPENAI_BASE_URL") or None,
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
+        anthropic_base_url=os.getenv("ANTHROPIC_BASE_URL") or None,
+        chat_provider=chat_provider,
+        chat_model=os.getenv("CHAT_MODEL") or None,
         raw_captions_dir=os.getenv("RAW_CAPTIONS_DIR") or RAW_CAPTIONS_DIR,
     )
