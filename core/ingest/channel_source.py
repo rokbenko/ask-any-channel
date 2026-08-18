@@ -3,14 +3,26 @@
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import yt_dlp
 
 from core.constants import YTDLP_BASE_OPTS
 
 _CHANNEL_ID_RE = re.compile(r"^UC[\w-]{22}$")
+_HANDLE_RE = re.compile(r"^@?[\w.-]{1,100}$")  # \w is unicode-aware: YouTube allows non-ASCII
 _URL_RE = re.compile(r"^https?://")
 _TAB_SUFFIXES = ("/videos", "/streams", "/shorts", "/playlists", "/community", "/featured")
+# yt-dlp's generic extractor will happily fetch thousands of non-YouTube sites — and, via the
+# UI form, anyone who can reach the page could point the worker at internal hosts. Only ever
+# hand it a YouTube URL.
+_ALLOWED_HOSTS = frozenset({"www.youtube.com", "youtube.com", "m.youtube.com", "youtu.be"})
+_MAX_INPUT_CHARS = 300
+
+
+class ChannelInputError(RuntimeError):
+    """The channel input isn't a YouTube handle/id/URL we're willing to resolve. Message is
+    written for the person who typed it."""
 
 
 def resolve_channel_input(raw: str) -> str:
@@ -19,15 +31,29 @@ def resolve_channel_input(raw: str) -> str:
     A bare channel URL (e.g. https://www.youtube.com/@SomeChannel) lists yt-dlp's flat
     playlist as the channel's TABS (Videos, Live, Shorts, ...), not actual videos —
     targeting the /videos tab directly is what makes flat extraction return real entries.
+    Pure (no network) — safe to call at enqueue time to reject bad input early.
     """
     raw = raw.strip()
+    if not raw or len(raw) > _MAX_INPUT_CHARS:
+        raise ChannelInputError("Enter a YouTube channel URL, @handle, or UC… channel id.")
+
     if _URL_RE.match(raw):
-        url = raw.rstrip("/")
+        parts = urlsplit(raw)
+        if parts.hostname not in _ALLOWED_HOSTS:
+            raise ChannelInputError(
+                f"Only YouTube URLs are supported (got host {parts.hostname!r}). "
+                "Paste a youtube.com channel URL, an @handle, or a UC… channel id."
+            )
+        url = f"https://{parts.hostname}{parts.path}".rstrip("/")
     elif _CHANNEL_ID_RE.match(raw):
         url = f"https://www.youtube.com/channel/{raw}"
-    else:
+    elif _HANDLE_RE.match(raw):
         handle = raw if raw.startswith("@") else f"@{raw}"
         url = f"https://www.youtube.com/{handle}"
+    else:
+        raise ChannelInputError(
+            f"{raw!r} doesn't look like a YouTube @handle, UC… channel id, or channel URL."
+        )
 
     if not url.endswith(_TAB_SUFFIXES):
         url = f"{url}/videos"

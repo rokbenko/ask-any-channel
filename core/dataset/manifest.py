@@ -7,7 +7,7 @@ provenance that `dataset load`/`validate`/`registry entry` never need to guess.
 
 import json
 import subprocess
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 MANIFEST_FILENAME = "manifest.json"
@@ -47,6 +47,7 @@ class Manifest:
     chunk_count: int
     limit: int | None
     sort: str
+    suggested_questions: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -65,6 +66,7 @@ class Manifest:
             chunk_count=data["chunk_count"],
             limit=data.get("limit"),
             sort=data.get("sort", "recent"),
+            suggested_questions=data.get("suggested_questions") or [],
         )
 
 

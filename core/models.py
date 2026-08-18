@@ -57,6 +57,7 @@ class IngestJob:
     created_at: datetime
     started_at: datetime | None
     finished_at: datetime | None
+    heartbeat_at: datetime
 
 
 @dataclass

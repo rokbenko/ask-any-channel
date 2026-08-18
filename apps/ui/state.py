@@ -29,8 +29,19 @@ def ensure_channel(new_channel_id: UUID) -> None:
     """A chat belongs to exactly one channel — switching channels always starts a fresh chat."""
     if st.session_state.get(_CHANNEL_ID_KEY) != new_channel_id:
         st.session_state[_CHANNEL_ID_KEY] = new_channel_id
-        st.query_params[_CHANNEL_PARAM] = str(new_channel_id)
         set_chat_id(None)
+    # Re-mirror even when unchanged: st.switch_page() (Channels → Chat) clears query params, and
+    # without the param a refresh right after would fall back to the first channel.
+    if st.query_params.get(_CHANNEL_PARAM) != str(new_channel_id):
+        st.query_params[_CHANNEL_PARAM] = str(new_channel_id)
+
+
+def clear() -> None:
+    """Forget the active channel/chat (e.g. the channel was just deleted)."""
+    st.session_state.pop(_CHANNEL_ID_KEY, None)
+    st.session_state.pop(_CHAT_ID_KEY, None)
+    st.query_params.pop(_CHANNEL_PARAM, None)
+    st.query_params.pop(_CHAT_PARAM, None)
 
 
 def set_chat_id(chat_id: UUID | None) -> None:

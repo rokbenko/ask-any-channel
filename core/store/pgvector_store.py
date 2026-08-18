@@ -6,12 +6,14 @@ from datetime import datetime
 from uuid import UUID
 
 from pgvector import Vector
+from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from core.db import get_connection
 from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
 from core.store.base import (
+    ActiveJobExistsError,
     ChannelStatusSummary,
     ChannelSummary,
     ChatSummary,
@@ -22,6 +24,10 @@ from core.store.base import (
 )
 
 _CHAT_TITLE_MAX_CHARS = 60
+# ingest_jobs.error is rendered in the UI and comes from arbitrary exception text (yt-dlp
+# dumps whole HTTP bodies) — cap it so one bad job can't bloat the row or the page.
+_MAX_JOB_ERROR_CHARS = 2000
+_ACTIVE_JOB_MESSAGE = "This channel already has a job queued or running — wait or cancel it."
 
 
 class PgVectorStore:
@@ -136,13 +142,23 @@ class PgVectorStore:
             rows = cur.fetchall()
         return [SearchResult(**row) for row in rows]
 
-    def create_job(self, *, channel_id: UUID | None, payload: dict) -> IngestJob:
-        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute(
-                "INSERT INTO ingest_jobs (channel_id, payload) VALUES (%s, %s) RETURNING *",
-                (channel_id, Jsonb(payload)),
-            )
-            row = cur.fetchone()
+    def create_job(
+        self, *, channel_id: UUID | None, payload: dict, status: str = "queued"
+    ) -> IngestJob:
+        try:
+            with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    INSERT INTO ingest_jobs (channel_id, payload, status, started_at)
+                    VALUES (%(channel_id)s, %(payload)s, %(status)s,
+                            CASE WHEN %(status)s = 'running' THEN now() END)
+                    RETURNING *
+                    """,
+                    {"channel_id": channel_id, "payload": Jsonb(payload), "status": status},
+                )
+                row = cur.fetchone()
+        except UniqueViolation as exc:
+            raise ActiveJobExistsError(_ACTIVE_JOB_MESSAGE) from exc
         return IngestJob(**row)
 
     def get_job(self, job_id: UUID) -> IngestJob:
@@ -168,7 +184,7 @@ class PgVectorStore:
 
             cur.execute(
                 """
-                UPDATE ingest_jobs SET status = 'running', started_at = now()
+                UPDATE ingest_jobs SET status = 'running', started_at = now(), heartbeat_at = now()
                 WHERE id = %s
                 RETURNING *
                 """,
@@ -184,8 +200,9 @@ class PgVectorStore:
         status: str | None = None,
         progress: dict | None = None,
         error: str | None = None,
+        channel_id: UUID | None = None,
     ) -> None:
-        fields = []
+        fields = ["heartbeat_at = now()"]
         params: dict = {"job_id": job_id}
 
         if status is not None:
@@ -196,18 +213,132 @@ class PgVectorStore:
             elif status in ("done", "failed"):
                 fields.append("finished_at = now()")
         if progress is not None:
-            fields.append("progress = %(progress)s")
+            fields.append("progress = progress || %(progress)s")
             params["progress"] = Jsonb(progress)
         if error is not None:
             fields.append("error = %(error)s")
-            params["error"] = error
-
-        if not fields:
-            return
+            params["error"] = error[:_MAX_JOB_ERROR_CHARS]
+        if channel_id is not None:
+            fields.append("channel_id = %(channel_id)s")
+            params["channel_id"] = channel_id
 
         sql = f"UPDATE ingest_jobs SET {', '.join(fields)} WHERE id = %(job_id)s"
+        try:
+            with get_connection() as conn:
+                conn.execute(sql, params)
+        except UniqueViolation as exc:
+            raise ActiveJobExistsError(_ACTIVE_JOB_MESSAGE) from exc
+
+    def get_latest_job_for_channel(self, channel_id: UUID) -> IngestJob | None:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "SELECT * FROM ingest_jobs WHERE channel_id = %s ORDER BY created_at DESC LIMIT 1",
+                (channel_id,),
+            )
+            row = cur.fetchone()
+        return IngestJob(**row) if row else None
+
+    def list_latest_jobs_by_channel(self) -> dict[UUID, IngestJob]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (channel_id) *
+                FROM ingest_jobs
+                WHERE channel_id IS NOT NULL
+                ORDER BY channel_id, created_at DESC
+                """
+            )
+            rows = cur.fetchall()
+        return {row["channel_id"]: IngestJob(**row) for row in rows}
+
+    def list_unattached_jobs(self) -> list[IngestJob]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT * FROM ingest_jobs
+                WHERE channel_id IS NULL AND status IN ('queued', 'running', 'failed')
+                ORDER BY created_at DESC
+                """
+            )
+            rows = cur.fetchall()
+        return [IngestJob(**row) for row in rows]
+
+    def count_stale_queued_jobs(self, older_than_s: float) -> int:
+        # heartbeat_at, not created_at: retry_job/update_job re-stamp it, so it's "last touched".
         with get_connection() as conn:
-            conn.execute(sql, params)
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM ingest_jobs
+                WHERE status = 'queued'
+                  AND heartbeat_at < now() - make_interval(secs => %(older_than_s)s)
+                """,
+                {"older_than_s": older_than_s},
+            ).fetchone()
+        return int(row[0])
+
+    def retry_job(self, job_id: UUID) -> IngestJob | None:
+        try:
+            with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+                cur.execute(
+                    """
+                    UPDATE ingest_jobs
+                    SET status = 'queued', error = NULL, started_at = NULL, heartbeat_at = now()
+                    WHERE id = %s AND status = 'failed'
+                    RETURNING *
+                    """,
+                    (job_id,),
+                )
+                row = cur.fetchone()
+        except UniqueViolation as exc:
+            raise ActiveJobExistsError(_ACTIVE_JOB_MESSAGE) from exc
+        return IngestJob(**row) if row else None
+
+    def cancel_job(self, job_id: UUID) -> IngestJob | None:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE ingest_jobs SET status = 'cancelled', finished_at = now()
+                WHERE id = %s AND status = 'queued'
+                RETURNING *
+                """,
+                (job_id,),
+            )
+            row = cur.fetchone()
+        return IngestJob(**row) if row else None
+
+    def reclaim_stale_jobs(self, stale_after_s: float, *, max_attempts: int) -> list[UUID]:
+        # `attempts` counts reclaims (the first run is attempt 0), kept in progress jsonb so no
+        # extra column is needed and update_job's merge semantics preserve it across runs.
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE ingest_jobs
+                SET status = 'failed', finished_at = now(), heartbeat_at = now(),
+                    error = format(
+                        'The worker died %%s times while running this job (last stage: %%s). '
+                        'Check `docker compose logs worker` and retry when fixed.',
+                        COALESCE((progress->>'attempts')::int, 0) + 1,
+                        COALESCE(progress->>'stage', 'unknown'))
+                WHERE status = 'running'
+                  AND heartbeat_at < now() - make_interval(secs => %(stale_after_s)s)
+                  AND COALESCE((progress->>'attempts')::int, 0) >= %(max_attempts)s - 1
+                """,
+                {"stale_after_s": stale_after_s, "max_attempts": max_attempts},
+            )
+            cur.execute(
+                """
+                UPDATE ingest_jobs
+                SET status = 'queued', started_at = NULL, heartbeat_at = now(),
+                    progress = progress || jsonb_build_object(
+                        'attempts', COALESCE((progress->>'attempts')::int, 0) + 1,
+                        'stage', 'reclaimed')
+                WHERE status = 'running'
+                  AND heartbeat_at < now() - make_interval(secs => %(stale_after_s)s)
+                RETURNING id
+                """,
+                {"stale_after_s": stale_after_s},
+            )
+            return [row[0] for row in cur.fetchall()]
 
     def get_channel_by_handle_or_id(self, ref: str) -> Channel | None:
         bare = ref.lstrip("@")
@@ -260,7 +391,9 @@ class PgVectorStore:
                 """
                 SELECT c.*,
                        COUNT(v.id) AS video_count,
-                       COUNT(v.id) FILTER (WHERE v.status = 'embedded') AS embedded_video_count
+                       COUNT(v.id) FILTER (WHERE v.status = 'embedded') AS embedded_video_count,
+                       MAX(v.updated_at) AS last_updated_at,
+                       (SELECT COUNT(*) FROM chunks ch WHERE ch.channel_id = c.id) AS chunk_count
                 FROM channels c
                 LEFT JOIN videos v ON v.channel_id = c.id
                 GROUP BY c.id
@@ -275,9 +408,70 @@ class PgVectorStore:
                 channel=Channel(**{f: row[f] for f in channel_fields}),
                 video_count=row["video_count"],
                 embedded_video_count=row["embedded_video_count"],
+                chunk_count=row["chunk_count"],
+                last_updated_at=row["last_updated_at"],
             )
             for row in rows
         ]
+
+    def list_processed_video_ids(self, channel_id: UUID) -> set[str]:
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT yt_video_id FROM videos
+                WHERE channel_id = %s AND status IN ('embedded', 'no_captions')
+                """,
+                (channel_id,),
+            ).fetchall()
+        return {row[0] for row in rows}
+
+    def set_channel_branding(self, channel_id: UUID, patch: dict) -> Channel:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                UPDATE channels SET branding = branding || %s::jsonb
+                WHERE id = %s
+                RETURNING *
+                """,
+                (Jsonb(patch), channel_id),
+            )
+            row = cur.fetchone()
+        return Channel(**row)
+
+    def list_sample_chunk_texts(
+        self, channel_id: UUID, *, max_videos: int = 5, max_chunks_per_video: int = 3
+    ) -> list[str]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT id FROM videos
+                WHERE channel_id = %(channel_id)s AND status = 'embedded'
+                ORDER BY view_count DESC NULLS LAST
+                LIMIT %(max_videos)s
+                """,
+                {"channel_id": channel_id, "max_videos": max_videos},
+            )
+            video_ids = [row["id"] for row in cur.fetchall()]
+            if not video_ids:
+                return []
+
+            cur.execute(
+                """
+                SELECT text FROM (
+                    SELECT text, video_id,
+                           row_number() OVER (PARTITION BY video_id ORDER BY idx) AS rn
+                    FROM chunks
+                    WHERE video_id = ANY(%(video_ids)s)
+                ) ranked
+                WHERE rn <= %(max_chunks_per_video)s
+                """,
+                {"video_ids": video_ids, "max_chunks_per_video": max_chunks_per_video},
+            )
+            return [row["text"] for row in cur.fetchall()]
+
+    def delete_channel(self, channel_id: UUID) -> None:
+        with get_connection() as conn:
+            conn.execute("DELETE FROM channels WHERE id = %s", (channel_id,))
 
     def create_chat(self, *, channel_id: UUID) -> Chat:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:

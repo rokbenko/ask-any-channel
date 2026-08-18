@@ -10,7 +10,7 @@ from core.dataset.bundle import (
 from core.dataset.manifest import ChannelMeta, ChunkingParams, EmbeddingMeta, Manifest
 
 
-def _make_manifest(*, with_embedding: bool = True) -> Manifest:
+def _make_manifest(*, with_embedding: bool = True, suggested_questions=None) -> Manifest:
     return Manifest(
         schema_version=1,
         channel=ChannelMeta(
@@ -28,6 +28,7 @@ def _make_manifest(*, with_embedding: bool = True) -> Manifest:
         chunk_count=2,
         limit=None,
         sort="recent",
+        suggested_questions=suggested_questions or [],
     )
 
 
@@ -107,3 +108,25 @@ def test_write_then_read_bundle_without_embeddings(tmp_path):
     assert bundle.embeddings is None
     assert bundle.chunks == chunks
     assert not (out_dir / "embeddings-text-embedding-3-small.parquet").exists()
+
+
+def test_manifest_round_trips_suggested_questions(tmp_path):
+    out_dir = tmp_path / "with-questions"
+    questions = ["What does this channel say about X?", "Who is the target audience?"]
+    manifest = _make_manifest(with_embedding=False, suggested_questions=questions)
+
+    write_bundle(out_dir, manifest, _make_videos(), _make_chunks(), embeddings=None)
+
+    bundle = read_bundle(out_dir)
+    assert bundle.manifest.suggested_questions == questions
+
+
+def test_manifest_from_dict_defaults_suggested_questions_when_absent():
+    """An old bundle's manifest.json, written before this field existed, must still parse."""
+    manifest = _make_manifest(with_embedding=False)
+    data = manifest.to_dict()
+    del data["suggested_questions"]
+
+    parsed = Manifest.from_dict(data)
+
+    assert parsed.suggested_questions == []

@@ -162,3 +162,75 @@ def test_chunk_timestamp_beyond_video_duration_is_flagged(tmp_path):
 
     errors = validate_bundle(out_dir)
     assert any("exceeds video" in e for e in errors)
+
+
+def _rewrite_manifest(out_dir, mutate) -> None:
+    manifest_path = out_dir / "manifest.json"
+    data = json.loads(manifest_path.read_text(encoding="utf-8"))
+    mutate(data)
+    manifest_path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_plain_suggested_questions_are_accepted(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "good-questions")
+    _rewrite_manifest(
+        out_dir, lambda d: d.update(suggested_questions=["What is this about?", "Who's it for?"])
+    )
+
+    assert validate_bundle(out_dir) == []
+
+
+def test_bundle_without_suggested_questions_field_is_still_valid(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "old-manifest")
+    _rewrite_manifest(out_dir, lambda d: d.pop("suggested_questions"))
+
+    assert validate_bundle(out_dir) == []
+
+
+def test_markdown_link_in_suggested_question_is_flagged(tmp_path):
+    """Questions render as Streamlit button labels, which support Markdown links and images —
+    a crafted bundle must not be able to plant a phishing chip on the owner's chat page."""
+    out_dir = _build_valid_bundle(tmp_path / "phish-question")
+    _rewrite_manifest(
+        out_dir, lambda d: d.update(suggested_questions=["[Sign in](https://evil.example)"])
+    )
+
+    errors = validate_bundle(out_dir)
+    assert any("suggested_questions[0]" in e for e in errors)
+
+
+def test_too_many_or_too_long_suggested_questions_are_flagged(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "long-questions")
+    _rewrite_manifest(out_dir, lambda d: d.update(suggested_questions=["x" * 500] + ["ok?"] * 20))
+
+    errors = validate_bundle(out_dir)
+    assert any("entries" in e for e in errors)
+    assert any("suggested_questions[0]" in e for e in errors)
+
+
+def test_non_list_suggested_questions_is_flagged(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "bad-type-questions")
+    _rewrite_manifest(out_dir, lambda d: d.update(suggested_questions="not a list"))
+
+    errors = validate_bundle(out_dir)
+    assert any("must be a list" in e for e in errors)
+
+
+def test_thumbnail_url_off_youtube_cdn_is_flagged(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "bad-thumb")
+    _rewrite_manifest(
+        out_dir, lambda d: d["channel"].update(thumbnail_url="http://attacker.example/t.png")
+    )
+
+    errors = validate_bundle(out_dir)
+    assert any("thumbnail_url" in e for e in errors)
+
+
+def test_youtube_cdn_thumbnail_url_is_accepted(tmp_path):
+    out_dir = _build_valid_bundle(tmp_path / "good-thumb")
+    _rewrite_manifest(
+        out_dir,
+        lambda d: d["channel"].update(thumbnail_url="https://yt3.googleusercontent.com/abc=s0"),
+    )
+
+    assert validate_bundle(out_dir) == []

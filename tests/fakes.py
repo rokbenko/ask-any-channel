@@ -1,17 +1,23 @@
-"""Minimal in-memory VectorStore/LLMProvider stand-ins for chat-orchestration tests. No DB,
-no network — duck-typed against the subset of each Protocol core.chat.answer actually calls."""
+"""Minimal in-memory VectorStore/LLMProvider stand-ins for chat-orchestration and job-lifecycle
+tests. No DB, no network — duck-typed against the subset of each Protocol the callers under
+test actually use."""
 
-from datetime import UTC, datetime
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from core.models import Channel, Chat, Message, UsageEvent
-from core.providers.base import ChatChunk, ChatUsage
+from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
+from core.providers.base import ChatChunk, ChatResponse, ChatUsage
+from core.store.base import ActiveJobExistsError
+
+_ACTIVE = ("queued", "running")
 
 
 class FakeVectorStore:
-    """`channel` is the one channel this store knows; every chat_id it's asked about is treated
-    as belonging to that channel unless `chat_channel_id` says otherwise (for the tenant-check
-    test). `messages` and `usage_events` are public so tests can assert on persistence."""
+    """`channel` is the one channel this store knows about up front; every chat_id it's asked
+    about is treated as belonging to that channel unless `chat_channel_id` says otherwise (for
+    the tenant-check test). `messages`, `usage_events`, `channels`, `videos`, `chats`, and `jobs`
+    are public so tests can assert on persistence directly."""
 
     def __init__(
         self,
@@ -21,21 +27,34 @@ class FakeVectorStore:
         history=None,
         chat_channel_id: UUID | None = None,
     ):
-        self._channel = channel
         self._search_results = search_results or []
         self._chat_channel_id = chat_channel_id
         self.messages: list[Message] = list(history or [])
         self.usage_events: list[UsageEvent] = []
+        self.channels: dict[UUID, Channel] = {channel.id: channel} if channel else {}
+        self.videos: dict[UUID, Video] = {}
+        self.chats: dict[UUID, Chat] = {}
+        self.jobs: dict[UUID, IngestJob] = {}
+        self._job_order: list[UUID] = []
+
+    # --- chat orchestration -------------------------------------------------
 
     def get_channel(self, channel_id):
-        if self._channel is not None and self._channel.id == channel_id:
-            return self._channel
+        return self.channels.get(channel_id)
+
+    def get_channel_by_handle_or_id(self, ref: str) -> Channel | None:
+        bare = ref.lstrip("@")
+        for c in self.channels.values():
+            if c.yt_channel_id == ref or c.handle in (bare, f"@{bare}"):
+                return c
         return None
 
     def get_chat(self, chat_id):
-        if self._channel is None:
+        if chat_id in self.chats:
+            return self.chats[chat_id]
+        if not self.channels:
             return None
-        channel_id = self._chat_channel_id or self._channel.id
+        channel_id = self._chat_channel_id or next(iter(self.channels))
         return Chat(id=chat_id, channel_id=channel_id, created_at=datetime.now(UTC))
 
     def search(self, *, channel_id, query_embedding, top_k):
@@ -67,23 +86,267 @@ class FakeVectorStore:
         self.usage_events.append(event)
         return event
 
+    # --- channel/video lifecycle ---------------------------------------------
+
+    def upsert_video(self, *, channel_id, yt_video_id, title, published_at, duration_s, view_count):
+        existing = next(
+            (
+                v
+                for v in self.videos.values()
+                if v.channel_id == channel_id and v.yt_video_id == yt_video_id
+            ),
+            None,
+        )
+        if existing is not None:
+            updated = replace(existing, title=title, view_count=view_count)
+            self.videos[existing.id] = updated
+            return updated
+        video = Video(
+            id=uuid4(),
+            channel_id=channel_id,
+            yt_video_id=yt_video_id,
+            title=title,
+            published_at=published_at,
+            duration_s=duration_s,
+            view_count=view_count,
+            status="pending",
+            error=None,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+        self.videos[video.id] = video
+        return video
+
+    def get_video_status(self, video_id):
+        return self.videos[video_id].status
+
+    def set_video_status(self, video_id, status, error=None):
+        self.videos[video_id] = replace(self.videos[video_id], status=status, error=error)
+
+    def list_processed_video_ids(self, channel_id) -> set[str]:
+        return {
+            v.yt_video_id
+            for v in self.videos.values()
+            if v.channel_id == channel_id and v.status in ("embedded", "no_captions")
+        }
+
+    def upsert_channel(self, *, yt_channel_id, handle, title, thumbnail_url):
+        existing = next(
+            (c for c in self.channels.values() if c.yt_channel_id == yt_channel_id), None
+        )
+        if existing is not None:
+            updated = replace(existing, handle=handle, title=title, thumbnail_url=thumbnail_url)
+            self.channels[existing.id] = updated
+            return updated
+        channel = Channel(
+            id=uuid4(),
+            yt_channel_id=yt_channel_id,
+            handle=handle,
+            title=title,
+            thumbnail_url=thumbnail_url,
+            branding={},
+            created_at=datetime.now(UTC),
+        )
+        self.channels[channel.id] = channel
+        return channel
+
+    def set_channel_branding(self, channel_id, patch: dict) -> Channel:
+        channel = self.channels[channel_id]
+        updated = replace(channel, branding={**channel.branding, **patch})
+        self.channels[channel_id] = updated
+        return updated
+
+    def create_chat(self, *, channel_id):
+        chat = Chat(id=uuid4(), channel_id=channel_id, created_at=datetime.now(UTC))
+        self.chats[chat.id] = chat
+        return chat
+
+    def delete_channel(self, channel_id) -> None:
+        """Mirrors the real schema's FK behavior (core/db/migrations/0001_init.sql): videos/
+        chats/messages/jobs cascade away, usage_events survive with their FKs nulled."""
+        self.channels.pop(channel_id, None)
+        self.videos = {vid: v for vid, v in self.videos.items() if v.channel_id != channel_id}
+
+        orphaned_chat_ids = {c.id for c in self.chats.values() if c.channel_id == channel_id}
+        self.chats = {cid: c for cid, c in self.chats.items() if c.channel_id != channel_id}
+        self.messages = [m for m in self.messages if m.chat_id not in orphaned_chat_ids]
+
+        self.jobs = {jid: j for jid, j in self.jobs.items() if j.channel_id != channel_id}
+        self._job_order = [jid for jid in self._job_order if jid in self.jobs]
+
+        for i, event in enumerate(self.usage_events):
+            channel_id_cleared = None if event.channel_id == channel_id else event.channel_id
+            chat_id_cleared = None if event.chat_id in orphaned_chat_ids else event.chat_id
+            if channel_id_cleared != event.channel_id or chat_id_cleared != event.chat_id:
+                self.usage_events[i] = replace(
+                    event, channel_id=channel_id_cleared, chat_id=chat_id_cleared
+                )
+
+    # --- job lifecycle ---------------------------------------------------
+
+    def _assert_no_active_conflict(self, *, channel_id, channel_input, exclude_id=None) -> None:
+        """Mirrors migration 0005's partial unique indexes: one active job per channel_id, and
+        one active job per raw channel_input while channel_id is still NULL."""
+        for other in self.jobs.values():
+            if other.id == exclude_id or other.status not in _ACTIVE:
+                continue
+            if channel_id is not None and other.channel_id == channel_id:
+                raise ActiveJobExistsError("active job exists for channel")
+            if (
+                channel_id is None
+                and other.channel_id is None
+                and other.payload.get("channel_input") == channel_input
+            ):
+                raise ActiveJobExistsError("active job exists for input")
+
+    def create_job(self, *, channel_id, payload: dict, status: str = "queued") -> IngestJob:
+        if status in _ACTIVE:
+            self._assert_no_active_conflict(
+                channel_id=channel_id, channel_input=payload.get("channel_input")
+            )
+        now = datetime.now(UTC)
+        job = IngestJob(
+            id=uuid4(),
+            channel_id=channel_id,
+            payload=payload,
+            status=status,
+            progress={},
+            error=None,
+            created_at=now,
+            started_at=now if status == "running" else None,
+            finished_at=None,
+            heartbeat_at=now,
+        )
+        self.jobs[job.id] = job
+        self._job_order.append(job.id)
+        return job
+
+    def seed_job(self, job: IngestJob) -> None:
+        """Test helper: insert a job with an arbitrary status directly, bypassing create_job's
+        always-'queued' default — used to set up a pre-existing queued/running/failed job."""
+        self.jobs[job.id] = job
+        self._job_order.append(job.id)
+
+    def get_job(self, job_id) -> IngestJob:
+        return self.jobs[job_id]
+
+    def update_job(self, job_id, *, status=None, progress=None, error=None, channel_id=None):
+        job = self.jobs[job_id]
+        changes: dict = {"heartbeat_at": datetime.now(UTC)}
+        if status is not None:
+            changes["status"] = status
+        if progress is not None:
+            changes["progress"] = {**job.progress, **progress}  # merge, like the real store
+        if error is not None:
+            changes["error"] = error
+        if channel_id is not None:
+            self._assert_no_active_conflict(
+                channel_id=channel_id, channel_input=None, exclude_id=job_id
+            )
+            changes["channel_id"] = channel_id
+        self.jobs[job_id] = replace(job, **changes)
+
+    def claim_next_queued_job(self) -> IngestJob | None:
+        for job_id in self._job_order:
+            job = self.jobs[job_id]
+            if job.status == "queued":
+                claimed = replace(job, status="running", started_at=datetime.now(UTC))
+                self.jobs[job_id] = claimed
+                return claimed
+        return None
+
+    def reclaim_stale_jobs(self, stale_after_s: float, *, max_attempts: int) -> list[UUID]:
+        cutoff = datetime.now(UTC) - timedelta(seconds=stale_after_s)
+        requeued: list[UUID] = []
+        for job_id, job in list(self.jobs.items()):
+            if job.status != "running" or job.heartbeat_at >= cutoff:
+                continue
+            attempts = int(job.progress.get("attempts", 0))
+            if attempts >= max_attempts - 1:
+                self.jobs[job_id] = replace(
+                    job, status="failed", error=f"The worker died {attempts + 1} times"
+                )
+            else:
+                self.jobs[job_id] = replace(
+                    job,
+                    status="queued",
+                    started_at=None,
+                    progress={**job.progress, "attempts": attempts + 1, "stage": "reclaimed"},
+                )
+                requeued.append(job_id)
+        return requeued
+
+    def get_latest_job_for_channel(self, channel_id) -> IngestJob | None:
+        for job_id in reversed(self._job_order):
+            job = self.jobs[job_id]
+            if job.channel_id == channel_id:
+                return job
+        return None
+
+    def list_latest_jobs_by_channel(self) -> dict[UUID, IngestJob]:
+        latest: dict[UUID, IngestJob] = {}
+        for job_id in self._job_order:
+            job = self.jobs[job_id]
+            if job.channel_id is not None:
+                latest[job.channel_id] = job  # later entries overwrite → latest wins
+        return latest
+
+    def list_unattached_jobs(self) -> list[IngestJob]:
+        return [
+            self.jobs[job_id]
+            for job_id in reversed(self._job_order)
+            if self.jobs[job_id].channel_id is None
+            and self.jobs[job_id].status in ("queued", "running", "failed")
+        ]
+
+    def count_stale_queued_jobs(self, older_than_s: float) -> int:
+        cutoff = datetime.now(UTC) - timedelta(seconds=older_than_s)
+        return sum(
+            1 for j in self.jobs.values() if j.status == "queued" and j.heartbeat_at < cutoff
+        )
+
+    def retry_job(self, job_id) -> IngestJob | None:
+        job = self.jobs.get(job_id)
+        if job is None or job.status != "failed":
+            return None
+        self._assert_no_active_conflict(
+            channel_id=job.channel_id,
+            channel_input=job.payload.get("channel_input"),
+            exclude_id=job_id,
+        )
+        updated = replace(job, status="queued", error=None, started_at=None)
+        self.jobs[job_id] = updated
+        return updated
+
+    def cancel_job(self, job_id) -> IngestJob | None:
+        job = self.jobs.get(job_id)
+        if job is None or job.status != "queued":
+            return None
+        updated = replace(job, status="cancelled", finished_at=datetime.now(UTC))
+        self.jobs[job_id] = updated
+        return updated
+
 
 class FakeLLMProvider:
     """embed() returns a fixed-length vector; stream_chat() replays a scripted list of
     ChatChunk events (or raises, for mid-stream-failure tests) and records the `messages` it
     was called with, for assertions."""
 
-    def __init__(self, *, embedding_dim, stream_chunks=None, raise_after=None):
+    def __init__(self, *, embedding_dim, stream_chunks=None, raise_after=None, chat_reply=""):
         self._embedding_dim = embedding_dim
         self._stream_chunks = stream_chunks or []
         self._raise_after = raise_after
+        self._chat_reply = chat_reply
         self.last_messages = None
+        self.chat_calls = 0
 
     def embed(self, texts, *, model=None):
         return [[0.0] * self._embedding_dim for _ in texts]
 
     def chat(self, messages, *, model=None):
-        raise NotImplementedError
+        self.last_messages = messages
+        self.chat_calls += 1
+        return ChatResponse(content=self._chat_reply, tokens_in=10, tokens_out=20)
 
     def stream_chat(self, messages, *, model=None):
         self.last_messages = messages

@@ -22,7 +22,7 @@ services:
 
   worker:
     build: .
-    command: python -m core.worker.daemon
+    command: aac worker
     env_file: .env
     environment:
       DATABASE_URL: postgresql://aac:${POSTGRES_PASSWORD:-aac}@postgres:5432/askanychannel
@@ -47,6 +47,11 @@ services:
       # Loopback only, same rationale as postgres above — wider exposure is a P4 reverse-proxy
       # concern, not something compose port publishing should do directly.
       - "127.0.0.1:8501:8501"
+    volumes:
+      # Same host dirs as the worker: the UI's "Delete channel" removes the bundle dir, which
+      # only means anything if it sees the directory the worker actually writes to.
+      - ./data:/app/data
+      - ./datasets:/app/datasets
     profiles: ["ui"]
     depends_on:
       postgres:

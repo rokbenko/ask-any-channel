@@ -1,6 +1,7 @@
 """Pure-function tests for the input-normalization helpers that the CLI's idempotency and
 caption-selection behavior depend on. No network, no database."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -85,3 +86,65 @@ def test_pick_best_candidate_falls_back_to_first_when_no_known_lang(tmp_path):
 
 def test_pick_best_candidate_handles_empty():
     assert _pick_best_candidate([], "abcdefghijk") is None
+
+
+# --- Phase 3 hardening: input allow-list + bundle-dir discovery ---------------------------
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "http://169.254.169.254/latest/meta-data",
+        "https://evil.example/@TED",
+        "https://youtube.com.evil.example/@TED",
+        "ftp://www.youtube.com/@TED",
+        "@has spaces",
+        "",
+        "x" * 400,
+    ],
+)
+def test_resolve_channel_input_rejects_non_youtube_or_malformed_input(raw):
+    from core.ingest.channel_source import ChannelInputError
+
+    with pytest.raises(ChannelInputError):
+        resolve_channel_input(raw)
+
+
+def test_resolve_channel_input_drops_query_and_fragment_from_youtube_urls():
+    url = resolve_channel_input("https://www.youtube.com/@TED?si=abc#frag")
+
+    assert url == "https://www.youtube.com/@TED/videos"
+
+
+def test_resolve_channel_input_accepts_unicode_handles():
+    assert resolve_channel_input("@Kanał").endswith("/@Kanał/videos")
+
+
+def _write_manifest(root: Path, slug: str, yt_channel_id: str) -> Path:
+    d = root / slug
+    d.mkdir(parents=True)
+    (d / "manifest.json").write_text(
+        json.dumps({"channel": {"yt_channel_id": yt_channel_id}}), encoding="utf-8"
+    )
+    return d
+
+
+def test_find_bundle_dirs_for_channel_matches_by_manifest_not_slug(tmp_path):
+    from core.dataset.bundle import find_bundle_dirs_for_channel
+
+    target = "UC" + "a" * 22
+    by_handle = _write_manifest(tmp_path, "TED", target)
+    by_id = _write_manifest(tmp_path, target, target)
+    _write_manifest(tmp_path, "Other", "UC" + "b" * 22)
+    (tmp_path / "corrupt").mkdir()
+    (tmp_path / "corrupt" / "manifest.json").write_text("{not json", encoding="utf-8")
+
+    found = find_bundle_dirs_for_channel(target, datasets_root=tmp_path)
+
+    assert sorted(found) == sorted([by_handle, by_id])
+
+
+def test_find_bundle_dirs_for_channel_handles_missing_root(tmp_path):
+    from core.dataset.bundle import find_bundle_dirs_for_channel
+
+    assert find_bundle_dirs_for_channel("UC" + "a" * 22, datasets_root=tmp_path / "nope") == []

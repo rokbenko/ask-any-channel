@@ -7,12 +7,13 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from uuid import UUID
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from core.constants import DATASETS_DIR
-from core.dataset.manifest import Manifest, read_manifest, write_manifest
+from core.dataset.manifest import MANIFEST_FILENAME, Manifest, read_manifest, write_manifest
 
 VIDEOS_FILENAME = "videos.jsonl"
 CHUNKS_FILENAME = "chunks.parquet"
@@ -35,6 +36,34 @@ def default_bundle_dir(channel_input: str) -> Path:
     raw = raw.lstrip("@")
     slug = _SLUG_RE.sub("-", raw).strip("-") or "channel"
     return Path(DATASETS_DIR) / slug
+
+
+def default_update_bundle_dir(channel_input: str, job_id: UUID) -> Path:
+    """A dedicated, per-job bundle dir for incremental updates — nested under the channel's
+    own slug dir (so channel deletion's directory cleanup removes it for free), never the
+    channel's main bundle dir. Reusing the main dir would make bundle_exists() see the
+    already-complete full bundle and short-circuit before any new videos are processed."""
+    return default_bundle_dir(channel_input) / "_updates" / str(job_id)
+
+
+def find_bundle_dirs_for_channel(
+    yt_channel_id: str, *, datasets_root: Path = Path(DATASETS_DIR)
+) -> list[Path]:
+    """Every top-level bundle dir whose manifest names this channel. The slug is derived from
+    whatever the user typed at build time (`@TED`, a UC… id, a /channel/ URL — three different
+    dirs for one channel), so deletion can't reconstruct it; the manifest is the truth."""
+    root = Path(datasets_root)
+    if not root.is_dir():
+        return []
+    matches: list[Path] = []
+    for manifest_path in sorted(root.glob(f"*/{MANIFEST_FILENAME}")):
+        try:
+            data = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue  # unreadable/corrupt manifest — not ours to delete
+        if (data.get("channel") or {}).get("yt_channel_id") == yt_channel_id:
+            matches.append(manifest_path.parent)
+    return matches
 
 
 @dataclass

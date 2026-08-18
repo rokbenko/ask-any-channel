@@ -15,15 +15,33 @@ from cli.ingest_cmd import ingest
 from cli.registry_cmd import app as registry_app
 from cli.search_cmd import search
 from cli.status_cmd import status
+from cli.worker_cmd import worker
 from core.config import ConfigError
 from core.constants import APP_NAME, CLI_NAME
 from core.credentials import CredentialError
 from core.db import DatabaseUnavailableError
+from core.ingest.channel_source import ChannelInputError
+from core.ingest.jobs import (
+    ActiveJobExistsError,
+    InvalidJobOptionsError,
+    JobNotCancellableError,
+    JobNotRetryableError,
+)
 from core.providers.base import ProviderError
 
 # Errors whose message is already written for end users. Anything else is a bug and should
 # surface as a normal traceback so it can be pasted into an issue.
-_USER_FACING_ERRORS = (ConfigError, DatabaseUnavailableError, CredentialError, ProviderError)
+_USER_FACING_ERRORS = (
+    ConfigError,
+    DatabaseUnavailableError,
+    CredentialError,
+    ProviderError,
+    ChannelInputError,
+    ActiveJobExistsError,
+    InvalidJobOptionsError,
+    JobNotRetryableError,
+    JobNotCancellableError,
+)
 
 app = typer.Typer(
     name=CLI_NAME,
@@ -35,6 +53,7 @@ app = typer.Typer(
 app.command("ingest")(ingest)
 app.command("search")(search)
 app.command("status")(status)
+app.command("worker")(worker)
 app.add_typer(dataset_app, name="dataset")
 app.add_typer(registry_app, name="registry")
 

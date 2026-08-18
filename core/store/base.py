@@ -54,6 +54,8 @@ class ChannelSummary:
     channel: Channel
     video_count: int
     embedded_video_count: int  # status = 'embedded' — actually searchable/answerable
+    chunk_count: int
+    last_updated_at: datetime | None  # MAX(videos.updated_at); None if the channel has no videos
 
 
 @dataclass
@@ -62,6 +64,12 @@ class ChatSummary:
     channel_id: UUID
     title: str | None  # derived from the first user message, truncated ~60 chars
     created_at: datetime
+
+
+class ActiveJobExistsError(RuntimeError):
+    """A channel (or, before resolution, a raw channel input) already has a queued/running job.
+    Enforced by the store (partial unique indexes in migration 0005) so it holds under
+    concurrent enqueues, not just by the pre-check in core.ingest.jobs."""
 
 
 class VectorStore(Protocol):
@@ -101,7 +109,13 @@ class VectorStore(Protocol):
         self, *, channel_id: UUID, query_embedding: list[float], top_k: int
     ) -> list[SearchResult]: ...
 
-    def create_job(self, *, channel_id: UUID | None, payload: dict) -> IngestJob: ...
+    def create_job(
+        self, *, channel_id: UUID | None, payload: dict, status: str = "queued"
+    ) -> IngestJob:
+        """`status="running"` is for callers that run the job inline in-process right away
+        (the CLI) — the row must never sit `queued` where an always-on worker could claim it
+        too. Raises ActiveJobExistsError if the channel/input already has an active job."""
+        ...
 
     def get_job(self, job_id: UUID) -> IngestJob: ...
 
@@ -114,7 +128,33 @@ class VectorStore(Protocol):
         status: str | None = None,
         progress: dict | None = None,
         error: str | None = None,
-    ) -> None: ...
+        channel_id: UUID | None = None,
+    ) -> None:
+        """Every call bumps heartbeat_at. `progress` is MERGED into the stored jsonb (keys not
+        in the patch survive — e.g. `attempts` set by reclaim_stale_jobs), never replaced.
+        Raises ActiveJobExistsError if a channel_id backfill collides with an active job."""
+        ...
+
+    def get_latest_job_for_channel(self, channel_id: UUID) -> IngestJob | None: ...
+
+    def list_latest_jobs_by_channel(self) -> dict[UUID, IngestJob]: ...
+
+    def list_unattached_jobs(self) -> list[IngestJob]:
+        """Jobs whose channel isn't resolved yet (channel_id IS NULL) and that still matter to
+        a user: queued, running, or failed — the "pending adds" the Channels page shows."""
+        ...
+
+    def count_stale_queued_jobs(self, older_than_s: float) -> int: ...
+
+    def retry_job(self, job_id: UUID) -> IngestJob | None: ...
+
+    def cancel_job(self, job_id: UUID) -> IngestJob | None: ...
+
+    def reclaim_stale_jobs(self, stale_after_s: float, *, max_attempts: int) -> list[UUID]:
+        """Requeues running jobs whose heartbeat is stale, incrementing progress.attempts; a job
+        that has already been reclaimed max_attempts-1 times is marked failed instead (a poison
+        job must not re-embed a channel forever). Returns the requeued ids."""
+        ...
 
     def get_channel_by_handle_or_id(self, ref: str) -> Channel | None: ...
 
@@ -123,6 +163,21 @@ class VectorStore(Protocol):
     def get_channel(self, channel_id: UUID) -> Channel | None: ...
 
     def list_channels(self) -> list[ChannelSummary]: ...
+
+    def list_processed_video_ids(self, channel_id: UUID) -> set[str]:
+        """yt_video_ids that reached a terminal content state (embedded / no_captions). Used as
+        the incremental-update diff signal — NOT "a videos row exists": stage_list_and_upsert
+        creates metadata rows before any processing, so a retried/reclaimed update job would
+        otherwise see every video as known and process nothing."""
+        ...
+
+    def set_channel_branding(self, channel_id: UUID, patch: dict) -> Channel: ...
+
+    def list_sample_chunk_texts(
+        self, channel_id: UUID, *, max_videos: int = 5, max_chunks_per_video: int = 3
+    ) -> list[str]: ...
+
+    def delete_channel(self, channel_id: UUID) -> None: ...
 
     def create_chat(self, *, channel_id: UUID) -> Chat: ...
 

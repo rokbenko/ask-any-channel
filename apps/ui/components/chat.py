@@ -7,9 +7,11 @@ from uuid import UUID
 import streamlit as st
 
 from apps.ui import state
+from apps.ui.components._common import escape_markdown, fail
 from core.chat.answer import answer
 from core.chat.citations import Citation
 from core.chat.errors import ChatNotFoundError, EmbeddingModelMismatchError, QuestionTooLongError
+from core.chat.suggestions import ensure_suggested_questions
 from core.config import get_settings
 from core.constants import MAX_QUESTION_CHARS
 from core.credentials import CredentialError, CredentialsProvider
@@ -60,13 +62,6 @@ def _render_stored_citations(payload: list[dict]) -> None:
         )
 
 
-def _fail(message: str) -> None:
-    """Show the error and halt this run WITHOUT the trailing st.rerun() — a rerun would redraw
-    from the DB and wipe the message before anyone reads it."""
-    st.error(message)
-    st.stop()
-
-
 def render(store: VectorStore, channel_id: UUID, chat_id: UUID | None) -> None:
     messages = []
     if chat_id is not None:
@@ -82,27 +77,49 @@ def render(store: VectorStore, channel_id: UUID, chat_id: UUID | None) -> None:
             if m.role == "assistant" and m.citations:
                 _render_stored_citations(m.citations)
 
-    prompt = st.chat_input("Ask about this channel's videos...", max_chars=MAX_QUESTION_CHARS)
+    settings = get_settings()
+    credentials = CredentialsProvider(settings)
+
+    suggested_prompt = None
+    if chat_id is None:
+        channel = store.get_channel(channel_id)
+        questions = []
+        if channel is not None:
+            try:
+                with st.spinner("Preparing starter questions…"):
+                    questions = ensure_suggested_questions(store, settings, credentials, channel)
+            except Exception:
+                # Must never break the chat page — a fresh chat with no chips is a fine fallback.
+                logger.warning(
+                    "suggested-question generation failed channel_id=%s", channel_id, exc_info=True
+                )
+        if questions:
+            st.caption("Try asking:")
+            columns = st.columns(len(questions))
+            for i, (col, question) in enumerate(zip(columns, questions, strict=True)):
+                # Sanitized in core already; escaping is belt-and-braces — the label is Markdown.
+                if col.button(escape_markdown(question), key=f"suggested-{i}"):
+                    suggested_prompt = question
+
+    typed_prompt = st.chat_input("Ask about this channel's videos...", max_chars=MAX_QUESTION_CHARS)
+    prompt = suggested_prompt or typed_prompt
     if not prompt:
         return
 
     with st.chat_message("user"):
         st.markdown(prompt)  # ephemeral echo this run only — answer() persists the real row
 
-    settings = get_settings()
-    credentials = CredentialsProvider(settings)
-
     with st.chat_message("assistant"):
         # Providers first, chat row second: a missing key must not leave an empty chat behind.
         try:
             embedding_provider = OpenAIProvider(credentials)
         except CredentialError as exc:
-            _fail(f"Chat needs an OpenAI key to embed your question: {exc}")
+            fail(f"Chat needs an OpenAI key to embed your question: {exc}")
 
         try:
             chat_provider, chat_model = build_chat_provider(settings, credentials)
         except CredentialError as exc:
-            _fail(f"Chat needs a {settings.chat_provider} key to answer: {exc}")
+            fail(f"Chat needs a {settings.chat_provider} key to answer: {exc}")
 
         if chat_id is None:
             chat_id = store.create_chat(channel_id=channel_id).id
@@ -122,9 +139,9 @@ def render(store: VectorStore, channel_id: UUID, chat_id: UUID | None) -> None:
             _render_citations(result.citations)
         except _USER_FACING_ERRORS as exc:
             logger.warning("chat turn failed chat_id=%s: %s", chat_id, exc)
-            _fail(str(exc))
+            fail(str(exc))
         except Exception:
             logger.exception("chat turn crashed chat_id=%s channel_id=%s", chat_id, channel_id)
-            _fail("Something went wrong answering that — the server log has the traceback.")
+            fail("Something went wrong answering that — the server log has the traceback.")
 
     st.rerun()  # success only: re-render from DB so history and the ephemeral echo can't diverge

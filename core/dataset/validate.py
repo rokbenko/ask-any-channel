@@ -4,8 +4,14 @@ as the pre-flight check before `dataset load` decides whether bundled embeddings
 
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from core.constants import DATASET_SCHEMA_VERSION
+from core.chat.suggestions import sanitize_question
+from core.constants import (
+    DATASET_SCHEMA_VERSION,
+    SUGGESTED_QUESTION_MAX_CHARS,
+    SUGGESTED_QUESTIONS_MAX_COUNT,
+)
 from core.dataset.bundle import read_bundle
 
 # yt-dlp's flat-playlist duration_s is known-imprecise (same reason published_at comes back
@@ -23,6 +29,42 @@ _DURATION_SLACK_BASE_S = 30.0
 _YT_VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _YT_CHANNEL_ID_RE = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
 _MAX_TITLE_CHARS = 300
+# thumbnail_url is rendered with st.image on the Channels page; only YouTube's CDNs, over TLS.
+_THUMBNAIL_HOSTS = frozenset({"i.ytimg.com", "yt3.googleusercontent.com", "yt3.ggpht.com"})
+
+
+def _thumbnail_url_error(url: str | None) -> str | None:
+    if url is None:
+        return None
+    parts = urlsplit(url)
+    if parts.scheme != "https" or parts.hostname not in _THUMBNAIL_HOSTS:
+        return (
+            f"manifest.channel.thumbnail_url {url!r} must be an https URL on one of "
+            f"{sorted(_THUMBNAIL_HOSTS)}"
+        )
+    return None
+
+
+def _suggested_questions_errors(raw: object) -> list[str]:
+    """Rejects (rather than silently cleaning) so a tampered bundle is visible at `validate`;
+    the loader still re-sanitizes as belt-and-braces."""
+    if not isinstance(raw, list):
+        return ["manifest.suggested_questions must be a list of strings"]
+    errors: list[str] = []
+    if len(raw) > SUGGESTED_QUESTIONS_MAX_COUNT:
+        errors.append(
+            f"manifest.suggested_questions has {len(raw)} entries (max "
+            f"{SUGGESTED_QUESTIONS_MAX_COUNT})"
+        )
+    for i, q in enumerate(raw):
+        if not isinstance(q, str):
+            errors.append(f"manifest.suggested_questions[{i}] is not a string")
+        elif len(q) > SUGGESTED_QUESTION_MAX_CHARS or "\n" in q or sanitize_question(q) != q:
+            errors.append(
+                f"manifest.suggested_questions[{i}] must be a single line of at most "
+                f"{SUGGESTED_QUESTION_MAX_CHARS} plain characters (no markdown/HTML syntax)"
+            )
+    return errors
 
 
 def validate_bundle(path: Path) -> list[str]:
@@ -62,6 +104,9 @@ def validate_bundle(path: Path) -> list[str]:
         )
     if manifest.channel.title and len(manifest.channel.title) > _MAX_TITLE_CHARS:
         errors.append(f"manifest.channel.title exceeds {_MAX_TITLE_CHARS} characters")
+    if thumb_error := _thumbnail_url_error(manifest.channel.thumbnail_url):
+        errors.append(thumb_error)
+    errors.extend(_suggested_questions_errors(manifest.suggested_questions))
 
     bad_video_ids = sorted(
         {v.yt_video_id for v in bundle.videos if not _YT_VIDEO_ID_RE.match(v.yt_video_id)}

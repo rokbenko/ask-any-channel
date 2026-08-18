@@ -109,6 +109,17 @@ def build(
     else:
         console.print("  embeddings: skipped (--skip-embeddings)")
 
+    if manifest.suggested_questions:
+        console.print(
+            f"  suggested questions: {len(manifest.suggested_questions)} generated "
+            "(one small chat call on the configured CHAT_PROVIDER)"
+        )
+    else:
+        console.print(
+            "  suggested questions: skipped (no chat key configured, or --skip-embeddings) — "
+            "the chat UI generates them lazily on first visit"
+        )
+
     handle = manifest.channel.handle.lstrip("@") if manifest.channel.handle else channel.lstrip("@")
     console.print(
         f"\nPut {handle} on the map: `aac registry entry {handle}` and open a PR "
