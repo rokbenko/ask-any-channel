@@ -26,10 +26,12 @@ class FakeVectorStore:
         search_results=None,
         history=None,
         chat_channel_id: UUID | None = None,
+        style_sample_chunk_texts: dict | None = None,
     ):
         self._search_results = search_results or []
         self._chat_channel_id = chat_channel_id
         self.search_calls: list[dict] = []
+        self.style_sample_chunk_texts: dict[UUID, list[str]] = style_sample_chunk_texts or {}
         self.messages: list[Message] = list(history or [])
         self.usage_events: list[UsageEvent] = []
         self.channels: dict[UUID, Channel] = {channel.id: channel} if channel else {}
@@ -165,6 +167,14 @@ class FakeVectorStore:
         updated = replace(channel, branding={**channel.branding, **patch})
         self.channels[channel_id] = updated
         return updated
+
+    def list_style_sample_chunk_texts(
+        self, channel_id, *, top_videos=10, chunks_per_video=5, random_chunks=30
+    ) -> list[str]:
+        return list(self.style_sample_chunk_texts.get(channel_id, []))
+
+    def count_channel_chunks(self, channel_id) -> int:
+        return len(self.style_sample_chunk_texts.get(channel_id, []))
 
     def create_chat(self, *, channel_id):
         chat = Chat(id=uuid4(), channel_id=channel_id, created_at=datetime.now(UTC))

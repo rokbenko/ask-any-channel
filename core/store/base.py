@@ -200,6 +200,21 @@ class VectorStore(Protocol):
         self, channel_id: UUID, *, max_videos: int = 5, max_chunks_per_video: int = 3
     ) -> list[str]: ...
 
+    def list_style_sample_chunk_texts(
+        self,
+        channel_id: UUID,
+        *,
+        top_videos: int = 10,
+        chunks_per_video: int = 5,
+        random_chunks: int = 30,
+    ) -> list[str]:
+        """A wider sample than list_sample_chunk_texts, for core.persona's style-profile
+        generation: top-viewed embedded videos (where a creator's signature material usually
+        lives) plus a random spread across the whole channel, deduped."""
+        ...
+
+    def count_channel_chunks(self, channel_id: UUID) -> int: ...
+
     def delete_channel(self, channel_id: UUID) -> None: ...
 
     def create_chat(self, *, channel_id: UUID) -> Chat: ...

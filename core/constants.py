@@ -71,6 +71,19 @@ RRF_K = 60  # standard RRF damping constant (Cormack et al. 2009); larger = flat
 VALID_RETRIEVAL_MODES = ("hybrid", "dense")
 DEFAULT_RETRIEVAL_MODE = "hybrid"
 
+# Corpus sampling for corpus-derived voice profiles (core/persona/): top-viewed embedded
+# videos (where a creator's signature material usually lives) plus a random spread across the
+# whole channel (so a profile isn't blind to everything outside the most-viewed handful).
+STYLE_SAMPLE_TOP_VIDEOS = 10
+STYLE_SAMPLE_CHUNKS_PER_VIDEO = 5
+STYLE_SAMPLE_RANDOM_CHUNKS = 30
+STYLE_SAMPLE_MAX_TOKENS = 25_000
+STYLE_PROFILE_MAX_CHARS = 6000
+# A channel's chunk count growing by at least this fraction since its style profile was last
+# generated is treated as "the corpus changed enough to be worth a refresh" (used by the P5E
+# auto-update scheduler's post-update refresh) — not an exact science, just a cheap proxy.
+PERSONA_STALE_GROWTH_RATIO = 0.25
+
 
 @dataclass(frozen=True)
 class ChatModelPricing:

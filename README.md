@@ -357,6 +357,7 @@ uv run aac search "what does this channel say about X?" --channel @SomeChannel
 | `aac dataset load <bundle_dir>` | Loads a previously built bundle into Postgres. Only calls an embedding API if the bundle's model doesn't match your configured one, or embeddings were skipped at build time. |
 | `aac dataset validate <bundle_dir>` | Checks a bundle's manifest and files for integrity. |
 | `aac registry entry <handle>` | Emits a metadata-only JSON entry (channel, suggested build config, video/chunk counts — never transcript content) for `registry/channels.json`, ready to paste into a PR. |
+| `aac persona build <channel> [--force]` | Generates (or, with `--force`, regenerates) a channel's corpus-derived voice profile, sampled from its own ingested transcripts. Instance-only — never written into bundles or registry entries. |
 
 `channel` accepts a full channel URL, an `@handle`, or a bare `UC...` id. In PowerShell, quote
 handles (`'@TED'`) — a bare `@` is splatting syntax there.

@@ -536,6 +536,72 @@ class PgVectorStore:
             )
             return [row["text"] for row in cur.fetchall()]
 
+    def list_style_sample_chunk_texts(
+        self,
+        channel_id: UUID,
+        *,
+        top_videos: int = 10,
+        chunks_per_video: int = 5,
+        random_chunks: int = 30,
+    ) -> list[str]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                """
+                SELECT id FROM videos
+                WHERE channel_id = %(channel_id)s AND status = 'embedded'
+                ORDER BY view_count DESC NULLS LAST
+                LIMIT %(top_videos)s
+                """,
+                {"channel_id": channel_id, "top_videos": top_videos},
+            )
+            video_ids = [row["id"] for row in cur.fetchall()]
+
+            seen_ids: set[UUID] = set()
+            texts: list[str] = []
+
+            if video_ids:
+                cur.execute(
+                    """
+                    SELECT id, text FROM (
+                        SELECT id, text, video_id,
+                               row_number() OVER (PARTITION BY video_id ORDER BY idx) AS rn
+                        FROM chunks
+                        WHERE video_id = ANY(%(video_ids)s)
+                    ) ranked
+                    WHERE rn <= %(chunks_per_video)s
+                    """,
+                    {"video_ids": video_ids, "chunks_per_video": chunks_per_video},
+                )
+                for row in cur.fetchall():
+                    seen_ids.add(row["id"])
+                    texts.append(row["text"])
+
+            # A random spread across the whole channel, not just the top-viewed videos — a
+            # style profile built only from the most popular handful can miss how the creator
+            # talks in less-viewed content.
+            cur.execute(
+                """
+                SELECT id, text FROM chunks
+                WHERE channel_id = %(channel_id)s
+                ORDER BY random()
+                LIMIT %(random_chunks)s
+                """,
+                {"channel_id": channel_id, "random_chunks": random_chunks},
+            )
+            for row in cur.fetchall():
+                if row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    texts.append(row["text"])
+
+        return texts
+
+    def count_channel_chunks(self, channel_id: UUID) -> int:
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT count(*) FROM chunks WHERE channel_id = %s", (channel_id,)
+            ).fetchone()
+        return row[0]
+
     def delete_channel(self, channel_id: UUID) -> None:
         with get_connection() as conn:
             conn.execute("DELETE FROM channels WHERE id = %s", (channel_id,))

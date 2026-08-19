@@ -59,6 +59,7 @@ from core.ingest.channel_source import list_channel_videos, resolve_channel_inpu
 from core.ingest.chunker import ChunkDraft, chunk_timed_words
 from core.ingest.vtt_parser import cues_to_clean_text, dedupe_rolling_cues, parse_vtt
 from core.models import Channel, IngestJob, Video
+from core.persona import ensure_style_profile
 from core.providers.base import LLMProvider
 from core.providers.factory import build_chat_provider_if_configured
 from core.providers.openai_provider import OpenAIProvider
@@ -176,6 +177,21 @@ def _try_generate_suggested_questions(
             "suggested-question generation skipped for channel %s", channel.id, exc_info=True
         )
         return []
+
+
+def _try_build_style_profile(
+    store: VectorStore, credentials: CredentialsProvider, channel: Channel
+) -> None:
+    """Best-effort, non-critical, run AFTER load_bundle_into_store — unlike suggested
+    questions, a style profile is sampled from Postgres (core.persona.build_style_profile via
+    VectorStore.list_style_sample_chunk_texts), so it needs the channel's chunks already
+    loaded. Same broad-except contract as _try_generate_suggested_questions: a transient chat-
+    API hiccup while building a voice profile must never fail an otherwise fully-successful
+    ingest."""
+    try:
+        ensure_style_profile(store, credentials, get_settings(), channel)
+    except Exception:
+        logger.warning("style-profile generation skipped for channel %s", channel.id, exc_info=True)
 
 
 def build_dataset(
@@ -421,6 +437,7 @@ def run_ingest_job(
 
     bundle = read_bundle(out_dir)
     load_bundle_into_store(store, credentials, bundle, heartbeat=lambda: store.update_job(job.id))
+    _try_build_style_profile(store, credentials, channel)
 
     return store.get_job(job.id)
 

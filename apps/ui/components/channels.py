@@ -3,12 +3,15 @@ management cards (progress, retry/cancel, chat/update/delete). Rendering + core 
 no SQL, no vendor SDK imports."""
 
 import logging
+from dataclasses import replace
 
 import streamlit as st
 
 from apps.ui import state
 from apps.ui.components._common import fail
+from core.config import get_settings
 from core.constants import MAX_INGEST_LIMIT, WORKER_STALL_WARNING_S
+from core.credentials import CredentialError, CredentialsProvider
 from core.ingest.channel_source import ChannelInputError
 from core.ingest.jobs import (
     ActiveJobExistsError,
@@ -22,6 +25,8 @@ from core.ingest.jobs import (
 )
 from core.ingest.runner import run_delete_channel
 from core.models import IngestJob
+from core.persona import disclosure_string, ensure_style_profile, get_persona, set_persona
+from core.providers.base import ProviderError
 from core.search.search import ChannelNotFoundError
 from core.store.base import ChannelSummary, VectorStore
 
@@ -178,7 +183,7 @@ def render_channel_card(
             _render_failed_job_section(store, latest_job)
             return
 
-        action_cols = st.columns(3)
+        action_cols = st.columns(4)
         if action_cols[0].button("Chat", key=f"chat-{channel.id}"):
             state.ensure_channel(channel.id)
             st.switch_page("Home.py")
@@ -201,7 +206,67 @@ def render_channel_card(
                     _flash("Checking for new videos — the worker will pick it up shortly.")
                     st.rerun()
 
-        with action_cols[2].popover("Delete"):
+        with action_cols[2].popover("Voice"):
+            persona = get_persona(channel)
+            display_name = channel.title or channel.handle or channel.yt_channel_id
+            enabled = st.checkbox(
+                "Enabled", value=persona.enabled, key=f"persona-enabled-{channel.id}"
+            )
+            family_friendly = st.checkbox(
+                "Family-friendly (no profanity)",
+                value=persona.family_friendly,
+                key=f"persona-ff-{channel.id}",
+            )
+            custom_instructions = st.text_area(
+                "Custom voice instructions",
+                value=persona.custom_instructions,
+                key=f"persona-custom-{channel.id}",
+            )
+            style_profile = st.text_area(
+                "Style profile (editable)",
+                value=persona.style_profile or "",
+                height=200,
+                key=f"persona-profile-{channel.id}",
+            )
+            st.caption(disclosure_string(display_name))
+
+            save_col, regen_col = st.columns(2)
+            if save_col.button("Save", key=f"persona-save-{channel.id}"):
+                set_persona(
+                    store,
+                    channel.id,
+                    replace(
+                        persona,
+                        enabled=enabled,
+                        family_friendly=family_friendly,
+                        custom_instructions=custom_instructions,
+                        style_profile=style_profile or None,
+                    ),
+                )
+                _flash("Voice settings saved.")
+                st.rerun()
+
+            if regen_col.button("Regenerate voice", key=f"persona-regen-{channel.id}"):
+                settings = get_settings()
+                credentials = CredentialsProvider(settings)
+                try:
+                    with st.spinner("Sampling transcripts and building a style profile…"):
+                        profile = ensure_style_profile(
+                            store, credentials, settings, channel, force=True
+                        )
+                except (CredentialError, ProviderError) as exc:
+                    st.error(str(exc))
+                else:
+                    if profile is None:
+                        st.warning(
+                            "Couldn't build a profile — needs a configured chat key and at "
+                            "least one embedded video."
+                        )
+                    else:
+                        _flash("Voice regenerated.")
+                        st.rerun()
+
+        with action_cols[3].popover("Delete"):
             confirm_target = channel.handle or channel.title or channel.yt_channel_id
             st.caption(f"Type '{confirm_target}' to confirm — this deletes all local data.")
             typed = st.text_input("Confirm", key=f"delete-confirm-{channel.id}")

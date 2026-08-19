@@ -2,6 +2,7 @@
 in-process. Share core.ingest.pipeline functions with the polling worker daemon — these
 files are thin plumbing only."""
 
+import logging
 import shutil
 from pathlib import Path
 from uuid import UUID
@@ -25,9 +26,12 @@ from core.ingest.pipeline import (
     stage_list_and_upsert,
 )
 from core.models import Channel, IngestJob
+from core.persona import ensure_style_profile
 from core.providers.factory import build_chat_provider_if_configured
 from core.providers.openai_provider import OpenAIProvider
 from core.store.pgvector_store import PgVectorStore
+
+logger = logging.getLogger(__name__)
 
 
 class BundleInvalidError(RuntimeError):
@@ -106,7 +110,16 @@ def run_dataset_load(path: Path) -> Channel:
     store = PgVectorStore()
     credentials = CredentialsProvider(get_settings())
     bundle: Bundle = read_bundle(path)
-    return load_bundle_into_store(store, credentials, bundle)
+    channel = load_bundle_into_store(store, credentials, bundle)
+
+    # A loaded bundle never carries a persona (instance-only, never in bundles) — regenerate
+    # locally, best-effort, same contract as core.ingest.pipeline._try_build_style_profile.
+    try:
+        ensure_style_profile(store, credentials, get_settings(), channel)
+    except Exception:
+        logger.warning("style-profile generation skipped for channel %s", channel.id, exc_info=True)
+
+    return channel
 
 
 def run_ingest_inline(
