@@ -86,14 +86,19 @@ dependencies = [
     { name = "pyarrow" },
     { name = "python-dotenv" },
     { name = "rich" },
-    { name = "streamlit" },
     { name = "tiktoken" },
     { name = "typer" },
     { name = "yt-dlp" },
 ]
 
+[package.optional-dependencies]
+ui = [
+    { name = "streamlit" },
+]
+
 [package.dev-dependencies]
 dev = [
+    { name = "jsonschema" },
     { name = "pytest" },
     { name = "ruff" },
 ]
@@ -108,14 +113,16 @@ requires-dist = [
     { name = "pyarrow", specifier = ">=17" },
     { name = "python-dotenv", specifier = ">=1.0" },
     { name = "rich", specifier = ">=13" },
-    { name = "streamlit", specifier = ">=1.50" },
+    { name = "streamlit", marker = "extra == 'ui'", specifier = ">=1.50" },
     { name = "tiktoken", specifier = ">=0.7" },
     { name = "typer", specifier = ">=0.12" },
     { name = "yt-dlp", specifier = ">=2024.8.6" },
 ]
+provides-extras = ["ui"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "jsonschema", specifier = ">=4" },
     { name = "pytest", specifier = ">=8" },
     { name = "ruff", specifier = ">=0.6" },
 ]

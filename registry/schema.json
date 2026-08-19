@@ -1,0 +1,45 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "AskAnyChannel registry entries",
+  "description": "Validates registry/channels.json against the exact shape core.dataset.registry.build_registry_entry() emits — metadata only, never transcript content.",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "yt_channel_id",
+      "suggested_config",
+      "video_count",
+      "chunk_count",
+      "last_verified",
+      "contributor"
+    ],
+    "additionalProperties": false,
+    "properties": {
+      "handle": { "type": ["string", "null"] },
+      "yt_channel_id": { "type": "string", "pattern": "^UC[A-Za-z0-9_-]{22}$" },
+      "title": { "type": ["string", "null"] },
+      "suggested_config": {
+        "type": "object",
+        "required": ["sort", "chunking"],
+        "additionalProperties": false,
+        "properties": {
+          "limit": { "type": ["integer", "null"], "minimum": 1 },
+          "sort": { "type": "string", "enum": ["recent", "views"] },
+          "chunking": {
+            "type": "object",
+            "required": ["target_tokens", "overlap_ratio"],
+            "additionalProperties": false,
+            "properties": {
+              "target_tokens": { "type": "integer", "minimum": 1 },
+              "overlap_ratio": { "type": "number", "minimum": 0, "maximum": 1 }
+            }
+          }
+        }
+      },
+      "video_count": { "type": "integer", "minimum": 0 },
+      "chunk_count": { "type": "integer", "minimum": 0 },
+      "last_verified": { "type": "string", "format": "date", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+      "contributor": { "type": "string", "minLength": 1 }
+    }
+  }
+}

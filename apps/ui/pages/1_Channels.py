@@ -4,11 +4,14 @@ Rendering + core calls only, per CLAUDE.md's "zero logic in Streamlit files" rul
 import streamlit as st
 
 from apps.ui.components import channels
+from apps.ui.components._common import require_healthy_environment
 from core.constants import APP_NAME
 from core.store.pgvector_store import PgVectorStore
 
 st.set_page_config(page_title=f"{APP_NAME} — Channels", page_icon="📺")
 st.title("Channels")
+
+require_healthy_environment()
 
 store = PgVectorStore()
 

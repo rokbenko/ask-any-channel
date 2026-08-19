@@ -36,6 +36,7 @@ class FakeVectorStore:
         self.chats: dict[UUID, Chat] = {}
         self.jobs: dict[UUID, IngestJob] = {}
         self._job_order: list[UUID] = []
+        self.embedding_dim: int | None = None
 
     # --- chat orchestration -------------------------------------------------
 
@@ -59,6 +60,11 @@ class FakeVectorStore:
 
     def search(self, *, channel_id, query_embedding, top_k):
         return self._search_results[:top_k]
+
+    def sample_embedding_dim(self) -> int | None:
+        # Mirrors PgVectorStore: dimension of one stored embedding, None if nothing is stored.
+        # Tests set `store.embedding_dim` directly to simulate a populated (or mismatched) store.
+        return self.embedding_dim
 
     def list_messages(self, chat_id):
         return [m for m in self.messages if m.chat_id == chat_id]

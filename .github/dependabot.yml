@@ -1,0 +1,17 @@
+# yt-dlp is the one dependency that rots on its own schedule (YouTube changes → captions come
+# back empty, not an error), and every self-hoster builds from uv.lock — so keep the lock moving
+# without the maintainer having to remember. Weekly is enough; a broken yt-dlp week is annoying,
+# a daily PR stream is worse.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      python-deps:
+        patterns: ["*"]
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"

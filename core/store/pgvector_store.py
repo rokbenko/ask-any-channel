@@ -142,6 +142,15 @@ class PgVectorStore:
             rows = cur.fetchall()
         return [SearchResult(**row) for row in rows]
 
+    def sample_embedding_dim(self) -> int | None:
+        # Mid-ingest, chunk rows exist before their embedding is written — skip those, or the
+        # sample could land on a NULL and report "nothing ingested yet" while an ingest is live.
+        with get_connection() as conn:
+            row = conn.execute(
+                "SELECT vector_dims(embedding) FROM chunks WHERE embedding IS NOT NULL LIMIT 1"
+            ).fetchone()
+        return row[0] if row else None
+
     def create_job(
         self, *, channel_id: UUID | None, payload: dict, status: str = "queued"
     ) -> IngestJob:

@@ -1,0 +1,19 @@
+[
+  {
+    "handle": "@BrokenExample",
+    "yt_channel_id": "not-a-valid-channel-id",
+    "title": "Broken Example",
+    "suggested_config": {
+      "limit": 50,
+      "sort": "recent",
+      "chunking": {
+        "target_tokens": 400,
+        "overlap_ratio": 0.15
+      }
+    },
+    "video_count": 10,
+    "chunk_count": 120,
+    "last_verified": "2026-08-18",
+    "contributor": "anonymous"
+  }
+]

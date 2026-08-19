@@ -11,13 +11,14 @@ import typer
 from rich.console import Console
 
 from cli.dataset_cmd import app as dataset_app
+from cli.doctor_cmd import doctor
 from cli.ingest_cmd import ingest
 from cli.registry_cmd import app as registry_app
 from cli.search_cmd import search
 from cli.status_cmd import status
 from cli.worker_cmd import worker
 from core.config import ConfigError
-from core.constants import APP_NAME, CLI_NAME
+from core.constants import APP_NAME, CLI_NAME, TOOL_VERSION
 from core.credentials import CredentialError
 from core.db import DatabaseUnavailableError
 from core.ingest.channel_source import ChannelInputError
@@ -50,10 +51,32 @@ app = typer.Typer(
     pretty_exceptions_enable=False,
 )
 
+
+def _print_version(value: bool) -> None:
+    if value:
+        typer.echo(f"{APP_NAME} {TOOL_VERSION}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _root(
+    version: bool = typer.Option(
+        False,
+        "--version",
+        callback=_print_version,
+        is_eager=True,
+        help="Print the version and exit.",
+    ),
+) -> None:
+    """Root callback: exists only to host --version. Deliberately no DB/config work here (see
+    module docstring)."""
+
+
 app.command("ingest")(ingest)
 app.command("search")(search)
 app.command("status")(status)
 app.command("worker")(worker)
+app.command("doctor")(doctor)
 app.add_typer(dataset_app, name="dataset")
 app.add_typer(registry_app, name="registry")
 

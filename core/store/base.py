@@ -109,6 +109,13 @@ class VectorStore(Protocol):
         self, *, channel_id: UUID, query_embedding: list[float], top_k: int
     ) -> list[SearchResult]: ...
 
+    def sample_embedding_dim(self) -> int | None:
+        """Dimension of one arbitrary stored chunk embedding, or None if no chunks exist yet.
+        Used by core.doctor to catch a live EMBEDDING_DIM/stored-data mismatch — nothing else
+        checks this against actual Postgres content (core.chat.answer only compares a live
+        embed call's output length, not what's already stored)."""
+        ...
+
     def create_job(
         self, *, channel_id: UUID | None, payload: dict, status: str = "queued"
     ) -> IngestJob:

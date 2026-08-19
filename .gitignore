@@ -20,8 +20,11 @@ __pycache__/
 # Ingestion cache
 data/raw/*.vtt
 
-# Dataset bundles — local artifacts only, transcript content is never committed
-datasets/
+# Dataset bundles — local artifacts only, transcript content is never committed. The directory
+# itself is tracked (.gitkeep) so a fresh clone has it host-owned before docker compose
+# bind-mounts it into the non-root container; everything inside it is ignored.
+datasets/*
+!datasets/.gitkeep
 
 # OS
 .DS_Store

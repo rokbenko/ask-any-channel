@@ -33,9 +33,24 @@ services:
       - ./data:/app/data
       - ./datasets:/app/datasets
     restart: unless-stopped
+    healthcheck:
+      # Same subset the worker runs at boot (core/doctor.py ROLE_CHECKS) — so it can't boot
+      # healthy and be flagged unhealthy a minute later over a chat-only setting.
+      test: ["CMD", "aac", "doctor", "--quiet", "--role", "worker"]
+      # Generous on purpose: the check imports psycopg/yt-dlp and opens a DB connection, which
+      # can take several seconds on a small VPS or Raspberry Pi. Note that Compose only *reports*
+      # health (`docker compose ps`) — it does not restart an unhealthy container; that's Swarm.
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 20s
 
   ui:
-    build: .
+    build:
+      context: .
+      args:
+        # Only the ui image needs Streamlit — see Dockerfile's INSTALL_EXTRAS.
+        INSTALL_EXTRAS: "ui"
     # 0.0.0.0 here overrides .streamlit/config.toml's localhost default — correct inside the
     # container, since the port below is only published on the host's loopback.
     command: ["streamlit", "run", "apps/ui/Home.py", "--server.address=0.0.0.0", "--server.port=8501"]
@@ -57,6 +72,13 @@ services:
       postgres:
         condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      # Same subset the UI runs on every page (core/doctor.py ROLE_CHECKS "ui").
+      test: ["CMD", "aac", "doctor", "--quiet", "--role", "ui"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 20s
 
 volumes:
   pgdata:

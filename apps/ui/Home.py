@@ -5,11 +5,14 @@ import streamlit as st
 
 from apps.ui import state
 from apps.ui.components import chat, empty_state, sidebar
+from apps.ui.components._common import require_healthy_environment
 from core.constants import APP_NAME
 from core.store.pgvector_store import PgVectorStore
 
 st.set_page_config(page_title=APP_NAME, page_icon="💬")
 st.title(APP_NAME)
+
+require_healthy_environment()
 
 store = PgVectorStore()
 

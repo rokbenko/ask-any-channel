@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.9.30"
+          python-version: "3.11"
+          enable-cache: true
+
+      # --locked: a stale uv.lock must fail here the same way it fails the Dockerfile
+      # (--frozen), instead of silently re-resolving on the CI runner.
+      - run: uv sync --locked --group dev
+
+      - run: uv run ruff format --check .
+
+      - run: uv run ruff check .
+
+      # Also covers tests/test_ui_isolation.py's core/apps-ui import-boundary check and
+      # tests/test_registry_schema.py (the registry file is validated on every run).
+      - run: uv run pytest

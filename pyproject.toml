@@ -17,8 +17,12 @@ dependencies = [
     "openai>=3",
     "anthropic>=0.34",
     "python-dotenv>=1.0",
-    "streamlit>=1.50",
 ]
+
+[project.optional-dependencies]
+# Only the `ui` (Streamlit) image needs this — the worker never imports apps/ui, so its image
+# builds without it (see Dockerfile's INSTALL_EXTRAS build arg).
+ui = ["streamlit>=1.50"]
 
 [project.scripts]
 aac = "cli.main:main"
@@ -34,6 +38,9 @@ packages = ["core", "cli", "apps"]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    # CI-only in practice (scripts/validate_registry.py), but small/pure-Python enough that a
+    # separate dependency group isn't worth it — this also lets local pytest reach it.
+    "jsonschema>=4",
 ]
 
 [tool.ruff]
@@ -51,3 +58,7 @@ extend-immutable-calls = ["typer.Option", "typer.Argument"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Explicit, so `from scripts.validate_registry import ...` in tests doesn't silently depend on
+# the editable install having put the repo root on sys.path (the trap DECISIONS.md records for
+# the old `db/` and `apps/` packages).
+pythonpath = ["."]
