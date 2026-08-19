@@ -29,6 +29,7 @@ class FakeVectorStore:
     ):
         self._search_results = search_results or []
         self._chat_channel_id = chat_channel_id
+        self.search_calls: list[dict] = []
         self.messages: list[Message] = list(history or [])
         self.usage_events: list[UsageEvent] = []
         self.channels: dict[UUID, Channel] = {channel.id: channel} if channel else {}
@@ -58,8 +59,11 @@ class FakeVectorStore:
         channel_id = self._chat_channel_id or next(iter(self.channels))
         return Chat(id=chat_id, channel_id=channel_id, created_at=datetime.now(UTC))
 
-    def search(self, *, channel_id, query_embedding, top_k):
-        return self._search_results[:top_k]
+    def search(self, *, channel_ids, query_embedding, top_k, query_text=None, mode=None):
+        self.search_calls.append(
+            {"channel_ids": list(channel_ids), "query_text": query_text, "mode": mode}
+        )
+        return [r for r in self._search_results if r.channel_id in channel_ids][:top_k]
 
     def sample_embedding_dim(self) -> int | None:
         # Mirrors PgVectorStore: dimension of one stored embedding, None if nothing is stored.

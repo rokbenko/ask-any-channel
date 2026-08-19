@@ -63,6 +63,14 @@ SUGGESTED_QUESTIONS_CHUNKS_PER_VIDEO = 3
 SUGGESTED_QUESTION_MAX_CHARS = 200
 SUGGESTED_QUESTIONS_MAX_COUNT = 10
 
+# How many candidates each retrieval arm (dense/lexical) considers before Reciprocal Rank
+# Fusion narrows to top_k — wide enough that a term ranking, say, 30th on cosine but 1st on
+# lexical still has both ranks available to fuse.
+RETRIEVAL_CANDIDATES = 50
+RRF_K = 60  # standard RRF damping constant (Cormack et al. 2009); larger = flatter weighting
+VALID_RETRIEVAL_MODES = ("hybrid", "dense")
+DEFAULT_RETRIEVAL_MODE = "hybrid"
+
 
 @dataclass(frozen=True)
 class ChatModelPricing:

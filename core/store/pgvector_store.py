@@ -10,8 +10,10 @@ from psycopg.errors import UniqueViolation
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from core.constants import DEFAULT_RETRIEVAL_MODE, RETRIEVAL_CANDIDATES
 from core.db import get_connection
 from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
+from core.search.hybrid import prepare_lexical_query, rrf_fuse
 from core.store.base import (
     ActiveJobExistsError,
     ChannelStatusSummary,
@@ -123,24 +125,80 @@ class PgVectorStore:
             )
 
     def search(
-        self, *, channel_id: UUID, query_embedding: list[float], top_k: int
+        self,
+        *,
+        channel_ids: list[UUID],
+        query_embedding: list[float],
+        top_k: int,
+        query_text: str | None = None,
+        mode: str = DEFAULT_RETRIEVAL_MODE,
     ) -> list[SearchResult]:
+        if not channel_ids:
+            return []
+
+        lexical_query = prepare_lexical_query(query_text) if query_text else None
+        run_hybrid = mode == "hybrid" and lexical_query is not None
+        # Widen the dense arm's candidate pool when it's about to be fused with the lexical
+        # arm — RRF needs both rankings' full breadth, not just the caller's final top_k.
+        dense_limit = RETRIEVAL_CANDIDATES if run_hybrid else top_k
+
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 SELECT c.id AS chunk_id, c.video_id, v.yt_video_id, v.title AS video_title,
                        c.text, c.t_start_s, c.t_end_s,
-                       1 - (c.embedding <=> %(qvec)s) AS score
+                       1 - (c.embedding <=> %(qvec)s) AS score,
+                       c.channel_id, ch.title AS channel_title, ch.handle AS channel_handle
                 FROM chunks c
                 JOIN videos v ON v.id = c.video_id
-                WHERE c.channel_id = %(channel_id)s
+                JOIN channels ch ON ch.id = c.channel_id
+                WHERE c.channel_id = ANY(%(channel_ids)s) AND c.embedding IS NOT NULL
                 ORDER BY c.embedding <=> %(qvec)s
-                LIMIT %(top_k)s
+                LIMIT %(limit)s
                 """,
-                {"qvec": Vector(query_embedding), "channel_id": channel_id, "top_k": top_k},
+                {
+                    "qvec": Vector(query_embedding),
+                    "channel_ids": channel_ids,
+                    "limit": dense_limit,
+                },
             )
-            rows = cur.fetchall()
-        return [SearchResult(**row) for row in rows]
+            dense_rows = cur.fetchall()
+
+            if not run_hybrid:
+                return [SearchResult(**row) for row in dense_rows[:top_k]]
+
+            cur.execute(
+                """
+                SELECT c.id AS chunk_id, c.video_id, v.yt_video_id, v.title AS video_title,
+                       c.text, c.t_start_s, c.t_end_s,
+                       ts_rank_cd(c.tsv, websearch_to_tsquery('english', %(q)s)) AS score,
+                       c.channel_id, ch.title AS channel_title, ch.handle AS channel_handle
+                FROM chunks c
+                JOIN videos v ON v.id = c.video_id
+                JOIN channels ch ON ch.id = c.channel_id
+                WHERE c.channel_id = ANY(%(channel_ids)s)
+                  AND c.tsv @@ websearch_to_tsquery('english', %(q)s)
+                ORDER BY score DESC
+                LIMIT %(limit)s
+                """,
+                {"q": lexical_query, "channel_ids": channel_ids, "limit": RETRIEVAL_CANDIDATES},
+            )
+            lexical_rows = cur.fetchall()
+
+        # Either arm has every non-score column; whichever row is found first supplies them.
+        rows_by_id = {row["chunk_id"]: row for row in dense_rows}
+        for row in lexical_rows:
+            rows_by_id.setdefault(row["chunk_id"], row)
+
+        fused = rrf_fuse(
+            [[r["chunk_id"] for r in dense_rows], [r["chunk_id"] for r in lexical_rows]]
+        )
+        results = []
+        for chunk_id, rrf_score in fused[:top_k]:
+            row = dict(rows_by_id[chunk_id])
+            row["score"] = rrf_score
+            results.append(SearchResult(**row))
+        return results
 
     def sample_embedding_dim(self) -> int | None:
         # Mid-ingest, chunk rows exist before their embedding is written — skip those, or the

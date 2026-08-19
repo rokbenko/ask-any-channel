@@ -134,6 +134,7 @@ def render(store: VectorStore, channel_id: UUID, chat_id: UUID | None) -> None:
                 chat_id=chat_id,
                 user_text=prompt,
                 chat_model=chat_model,
+                retrieval_mode=settings.retrieval_mode,
             )
             st.write_stream(result.text_stream)
             _render_citations(result.citations)

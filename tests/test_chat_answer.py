@@ -25,7 +25,8 @@ def _make_channel(title="Some Channel") -> Channel:
     )
 
 
-def _make_search_results(n: int) -> list[SearchResult]:
+def _make_search_results(n: int, channel: Channel | None = None) -> list[SearchResult]:
+    channel = channel or _make_channel()
     return [
         SearchResult(
             chunk_id=uuid4(),
@@ -36,6 +37,9 @@ def _make_search_results(n: int) -> list[SearchResult]:
             t_start_s=float(i * 30),
             t_end_s=float(i * 30 + 10),
             score=0.9,
+            channel_id=channel.id,
+            channel_title=channel.title,
+            channel_handle=channel.handle,
         )
         for i in range(1, n + 1)
     ]
@@ -133,7 +137,7 @@ def test_answer_streams_text_chunks_in_order():
 
 def test_answer_persists_assistant_message_and_citations_after_stream_exhausted():
     channel = _make_channel()
-    store = FakeVectorStore(channel=channel, search_results=_make_search_results(1))
+    store = FakeVectorStore(channel=channel, search_results=_make_search_results(1, channel))
     embedding_provider, chat_provider = _providers(
         stream_chunks=make_chat_chunks(["The answer is [1]."])
     )

@@ -2,6 +2,8 @@
 
 from urllib.parse import quote
 
+from core.constants import DEFAULT_RETRIEVAL_MODE
+from core.models import Channel
 from core.providers.base import LLMProvider
 from core.store.base import SearchResult, VectorStore
 
@@ -17,13 +19,36 @@ def search_channel(
     channel_ref: str,
     query: str,
     top_k: int = 8,
+    mode: str = DEFAULT_RETRIEVAL_MODE,
 ) -> list[SearchResult]:
     channel = store.get_channel_by_handle_or_id(channel_ref)
     if channel is None:
         raise ChannelNotFoundError(f"No channel found matching {channel_ref!r}")
 
     query_embedding = provider.embed([query])[0]
-    return store.search(channel_id=channel.id, query_embedding=query_embedding, top_k=top_k)
+    return store.search(
+        channel_ids=[channel.id],
+        query_embedding=query_embedding,
+        top_k=top_k,
+        query_text=query,
+        mode=mode,
+    )
+
+
+def resolve_channel_refs(store: VectorStore, refs: list[str]) -> list[Channel]:
+    """Resolves each ref (handle/@handle/UC id) to a Channel, in the order given, dropping
+    duplicates while keeping the first occurrence. Raises ChannelNotFoundError naming the
+    first ref that doesn't resolve."""
+    seen: set = set()
+    channels: list[Channel] = []
+    for ref in refs:
+        channel = store.get_channel_by_handle_or_id(ref)
+        if channel is None:
+            raise ChannelNotFoundError(f"No channel found matching {ref!r}")
+        if channel.id not in seen:
+            seen.add(channel.id)
+            channels.append(channel)
+    return channels
 
 
 def build_timestamped_url(yt_video_id: str, t_start_s: float) -> str:

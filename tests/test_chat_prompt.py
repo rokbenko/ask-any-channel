@@ -15,6 +15,9 @@ def _make_result(*, video_title="Some Video", t_start_s=125.0, text="chunk text"
         t_start_s=t_start_s,
         t_end_s=t_start_s + 10,
         score=0.9,
+        channel_id=uuid4(),
+        channel_title="Some Channel",
+        channel_handle="@some",
     )
 
 

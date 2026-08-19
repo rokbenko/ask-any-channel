@@ -14,6 +14,7 @@ from cli.dataset_cmd import app as dataset_app
 from cli.doctor_cmd import doctor
 from cli.ingest_cmd import ingest
 from cli.registry_cmd import app as registry_app
+from cli.retrieval_cmd import app as retrieval_app
 from cli.search_cmd import search
 from cli.status_cmd import status
 from cli.worker_cmd import worker
@@ -79,6 +80,7 @@ app.command("worker")(worker)
 app.command("doctor")(doctor)
 app.add_typer(dataset_app, name="dataset")
 app.add_typer(registry_app, name="registry")
+app.add_typer(retrieval_app, name="retrieval")
 
 
 def main() -> None:

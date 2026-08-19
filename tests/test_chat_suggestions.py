@@ -38,6 +38,7 @@ def _settings(*, openai_key: str | None) -> Settings:
         chat_provider="openai",
         chat_model=None,
         raw_captions_dir="data/raw",
+        retrieval_mode="hybrid",
     )
 
 

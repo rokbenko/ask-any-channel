@@ -8,6 +8,7 @@ from core.store.base import SearchResult
 
 
 def _make_context(n: int) -> list[SearchResult]:
+    channel_id = uuid4()
     return [
         SearchResult(
             chunk_id=uuid4(),
@@ -18,6 +19,9 @@ def _make_context(n: int) -> list[SearchResult]:
             t_start_s=float(i * 30),
             t_end_s=float(i * 30 + 10),
             score=0.9,
+            channel_id=channel_id,
+            channel_title="Some Channel",
+            channel_handle="@some",
         )
         for i in range(1, n + 1)
     ]

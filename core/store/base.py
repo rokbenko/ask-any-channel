@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from core.constants import DEFAULT_RETRIEVAL_MODE
 from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
 
 
@@ -29,6 +30,9 @@ class SearchResult:
     t_start_s: float
     t_end_s: float
     score: float
+    channel_id: UUID
+    channel_title: str | None
+    channel_handle: str | None
 
 
 @dataclass
@@ -106,8 +110,20 @@ class VectorStore(Protocol):
     ) -> None: ...
 
     def search(
-        self, *, channel_id: UUID, query_embedding: list[float], top_k: int
-    ) -> list[SearchResult]: ...
+        self,
+        *,
+        channel_ids: list[UUID],
+        query_embedding: list[float],
+        top_k: int,
+        query_text: str | None = None,
+        mode: str = DEFAULT_RETRIEVAL_MODE,
+    ) -> list[SearchResult]:
+        """Retrieves across ALL of channel_ids at once (a single-element list is the original
+        one-channel behaviour). mode="dense" (or query_text=None) is pure pgvector cosine
+        ranking — today's semantics. mode="hybrid" additionally ranks by full-text search
+        (websearch_to_tsquery/ts_rank_cd over chunks.tsv) and fuses the two rankings with
+        Reciprocal Rank Fusion (core.search.hybrid.rrf_fuse) before taking the top_k."""
+        ...
 
     def sample_embedding_dim(self) -> int | None:
         """Dimension of one arbitrary stored chunk embedding, or None if no chunks exist yet.

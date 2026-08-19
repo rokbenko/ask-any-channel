@@ -10,7 +10,7 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 
-from core.constants import RAW_CAPTIONS_DIR
+from core.constants import DEFAULT_RETRIEVAL_MODE, RAW_CAPTIONS_DIR, VALID_RETRIEVAL_MODES
 
 VALID_INSTANCE_MODES = ("selfhost", "cloud")
 VALID_CHAT_PROVIDERS = ("openai", "anthropic")
@@ -40,6 +40,7 @@ class Settings:
     chat_provider: str
     chat_model: str | None  # None means "use the provider's default" from core/constants.py
     raw_captions_dir: str
+    retrieval_mode: str
 
 
 class ConfigError(RuntimeError):
@@ -72,6 +73,12 @@ def get_settings() -> Settings:
             f"CHAT_PROVIDER must be one of {VALID_CHAT_PROVIDERS}, got {chat_provider!r}"
         )
 
+    retrieval_mode = os.getenv("RETRIEVAL_MODE") or DEFAULT_RETRIEVAL_MODE
+    if retrieval_mode not in VALID_RETRIEVAL_MODES:
+        raise ConfigError(
+            f"RETRIEVAL_MODE must be one of {VALID_RETRIEVAL_MODES}, got {retrieval_mode!r}"
+        )
+
     return Settings(
         instance_mode=instance_mode,
         database_url=database_url,
@@ -82,4 +89,5 @@ def get_settings() -> Settings:
         chat_provider=chat_provider,
         chat_model=os.getenv("CHAT_MODEL") or None,
         raw_captions_dir=os.getenv("RAW_CAPTIONS_DIR") or RAW_CAPTIONS_DIR,
+        retrieval_mode=retrieval_mode,
     )

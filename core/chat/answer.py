@@ -14,7 +14,12 @@ from core.chat.citations import Citation, parse_citations
 from core.chat.errors import ChatNotFoundError, EmbeddingModelMismatchError, QuestionTooLongError
 from core.chat.pricing import estimate_cost_usd
 from core.chat.prompt import build_messages
-from core.constants import EMBEDDING_DIM, EMBEDDING_MODEL, MAX_QUESTION_CHARS
+from core.constants import (
+    DEFAULT_RETRIEVAL_MODE,
+    EMBEDDING_DIM,
+    EMBEDDING_MODEL,
+    MAX_QUESTION_CHARS,
+)
 from core.providers.base import LLMProvider
 from core.search.search import ChannelNotFoundError
 from core.store.base import VectorStore
@@ -57,6 +62,7 @@ def answer(
     chat_model: str,
     top_k: int = DEFAULT_TOP_K,
     history_window: int = DEFAULT_HISTORY_WINDOW,
+    retrieval_mode: str = DEFAULT_RETRIEVAL_MODE,
 ) -> AnswerResult:
     if len(user_text) > MAX_QUESTION_CHARS:
         raise QuestionTooLongError(
@@ -82,7 +88,13 @@ def answer(
             "this channel with the configured embedding model, or fix EMBEDDING_MODEL."
         )
 
-    context = store.search(channel_id=channel_id, query_embedding=query_embedding, top_k=top_k)
+    context = store.search(
+        channel_ids=[channel_id],
+        query_embedding=query_embedding,
+        top_k=top_k,
+        query_text=user_text,
+        mode=retrieval_mode,
+    )
 
     full_history = store.list_messages(chat_id)  # chronological ascending
     windowed_history = full_history[-history_window:] if history_window else []

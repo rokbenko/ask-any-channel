@@ -178,6 +178,7 @@ All settings come from `.env` (copy `.env.example` to start) via `core/config.py
 | `ANTHROPIC_API_KEY` | Required only when `CHAT_PROVIDER=anthropic`. |
 | `CHAT_PROVIDER` | `openai` (default) or `anthropic` — which vendor answers chat turns. |
 | `CHAT_MODEL` | Overrides the default chat model for the configured provider. Leave blank to use the built-in default. |
+| `RETRIEVAL_MODE` | `hybrid` (default) fuses vector + full-text search (RRF) — better for exact names/numbers/framework titles. `dense` is vector-only. |
 | `OPENAI_BASE_URL` / `ANTHROPIC_BASE_URL` | Point at any OpenAI-/Anthropic-compatible endpoint (self-hosted proxy, local server). For embeddings the endpoint must serve `text-embedding-3-small` at 1536 dims — see the [FAQ](#faq). |
 | `POSTGRES_PASSWORD` | Password for the compose Postgres service (default `aac`). Change it for anything beyond a laptop, and keep `DATABASE_URL` in sync. |
 | `DATABASE_URL` | Postgres connection string. The compose Postgres service is published on **`127.0.0.1:5432` only** — Docker port publishing bypasses host firewalls, so it's deliberately not reachable from the network. |
@@ -346,7 +347,8 @@ uv run aac search "what does this channel say about X?" --channel @SomeChannel
 | Command | Does |
 | --- | --- |
 | `aac ingest <channel> [--limit N] [--sort views\|recent]` | Lists channel videos, fetches captions, chunks transcripts, embeds, and stores them directly in Postgres. Idempotent — re-runs skip already-completed work. |
-| `aac search "<question>" --channel <handle> [--top-k 8]` | Prints the top matching transcript chunks with a score, video title, and a timestamped YouTube link (`&t={seconds}s`) that lands where the words are spoken. |
+| `aac search "<question>" --channel <handle> [--top-k 8] [--mode hybrid\|dense]` | Prints the top matching transcript chunks with a score, video title, and a timestamped YouTube link (`&t={seconds}s`) that lands where the words are spoken. |
+| `aac retrieval compare "<question>" --channels <a,b,...> [--top-k 8]` | Runs the same question through dense-only and hybrid retrieval side by side, so a hybrid win (exact names, numbers, framework titles) is visible rather than asserted. |
 | `aac status` | Channels, per-status video counts, recent ingest job states. |
 | `aac worker` | Runs the polling ingest daemon in the foreground — claims queued jobs and processes them. What the `worker` compose service runs; exits cleanly on SIGTERM/SIGINT. |
 | `aac doctor [--quiet] [--role all\|worker\|ui]` | Checks env vars, database reachability/migrations, data-directory permissions, embedding-dimension consistency, API keys, and the yt-dlp/Node.js runtime; prints app/Python/yt-dlp versions first. Exits non-zero on any failure. `--role` selects the subset a given process needs — the compose healthchecks run `--quiet --role worker|ui`. |
