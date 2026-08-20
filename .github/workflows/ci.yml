@@ -22,12 +22,18 @@ jobs:
 
       # --locked: a stale uv.lock must fail here the same way it fails the Dockerfile
       # (--frozen), instead of silently re-resolving on the CI runner.
-      - run: uv sync --locked --group dev
+      # --extra api: tests/test_api.py imports fastapi.testclient, so without it the whole
+      # suite dies at COLLECTION (ModuleNotFoundError), not just that file. The `ui` extra is
+      # deliberately NOT installed — tests/test_ui_isolation.py AST-parses apps/ui rather than
+      # importing it, so nothing in the suite needs Streamlit.
+      - run: uv sync --locked --group dev --extra api
 
       - run: uv run ruff format --check .
 
       - run: uv run ruff check .
 
-      # Also covers tests/test_ui_isolation.py's core/apps-ui import-boundary check and
+      # --extra api again, not just on the sync above: `uv run` re-syncs the environment to the
+      # flags IT is given, so omitting it here can drop the extra the sync just installed.
+      # Also covers tests/test_ui_isolation.py's core/apps-{ui,api} import-boundary checks and
       # tests/test_registry_schema.py (the registry file is validated on every run).
-      - run: uv run pytest
+      - run: uv run --extra api pytest
