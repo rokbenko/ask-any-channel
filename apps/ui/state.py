@@ -72,10 +72,18 @@ def start_scope(source_ids: list[UUID], voice_id: UUID | None) -> None:
 def apply_scope_edit(store: VectorStore) -> None:
     """Call after the Sources/Voice widgets change (their on_change handlers). If a chat is
     open, the edit is persisted to THAT chat — sources/voice are editable on an open chat, not
-    fixed at creation. Otherwise it just updates the draft + URL for the next chat."""
+    fixed at creation. Otherwise it just updates the draft + URL for the next chat.
+
+    An EMPTY selection is never persisted. core.chat.scope.build_scope treats an empty scope as
+    an error (EmptyScopeError) and this path bypasses it, so without this guard clearing the
+    Sources multiselect would write a zero-source chat straight to Postgres — which
+    VectorStore.delete_channel's orphan sweep would later reap along with all its messages.
+    Keeping it in the widget only means the sidebar's "select at least one source" warning is
+    recoverable: re-select a source and the open chat is untouched."""
     chat_id = get_chat_id()
-    if chat_id is not None:
-        scope = ChatScope(source_channel_ids=tuple(get_sources()), voice_channel_id=get_voice())
+    sources = get_sources()
+    if chat_id is not None and sources:
+        scope = ChatScope(source_channel_ids=tuple(sources), voice_channel_id=get_voice())
         update_chat_scope(store, chat_id, scope)
     else:
         _mirror_draft_to_url()

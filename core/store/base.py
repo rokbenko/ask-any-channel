@@ -193,6 +193,13 @@ class VectorStore(Protocol):
 
     def list_channels(self) -> list[ChannelSummary]: ...
 
+    def list_all_channels(self) -> list[Channel]:
+        """Every channel, no aggregates. Deliberately separate from list_channels(): that one
+        computes per-channel video/chunk counts (including a COUNT(*) over chunks per channel)
+        for the Channels page, which is far too expensive for callers that only need names and
+        ids — notably core.chat.answer's per-turn "try adding X" probe."""
+        ...
+
     def list_processed_video_ids(self, channel_id: UUID) -> set[str]:
         """yt_video_ids that reached a terminal content state (embedded / no_captions). Used as
         the incremental-update diff signal — NOT "a videos row exists": stage_list_and_upsert

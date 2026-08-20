@@ -460,6 +460,12 @@ class PgVectorStore:
             by_id = {row["id"]: Channel(**row) for row in cur.fetchall()}
         return [by_id[cid] for cid in channel_ids if cid in by_id]
 
+    def list_all_channels(self) -> list[Channel]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM channels ORDER BY created_at")
+            rows = cur.fetchall()
+        return [Channel(**row) for row in rows]
+
     def list_channels(self) -> list[ChannelSummary]:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -630,17 +636,30 @@ class PgVectorStore:
         return row[0]
 
     def delete_channel(self, channel_id: UUID) -> None:
-        with get_connection() as conn:
-            conn.execute("DELETE FROM channels WHERE id = %s", (channel_id,))
+        with get_connection() as conn, conn.cursor() as cur:
+            # Which chats this channel feeds must be captured BEFORE the cascade below removes
+            # the chat_sources rows that say so. Afterwards a zero-source chat emptied by THIS
+            # deletion is indistinguishable from one the user deliberately emptied in the
+            # sidebar — and sweeping the latter would silently delete a chat (and every message
+            # in it) that the user still wants. Scoping the sweep to these ids is what makes
+            # "orphaned by this delete" a decidable question.
+            cur.execute("SELECT chat_id FROM chat_sources WHERE channel_id = %s", (channel_id,))
+            affected_chat_ids = [row[0] for row in cur.fetchall()]
+
+            cur.execute("DELETE FROM channels WHERE id = %s", (channel_id,))
+
             # chat_sources rows for this channel cascaded away with the DELETE above (FK
             # ON DELETE CASCADE); a chat left with zero sources is meaningless — remove it too
             # (its messages cascade; any usage_events survive with FKs already nulled).
-            conn.execute(
-                """
-                DELETE FROM chats c
-                WHERE NOT EXISTS (SELECT 1 FROM chat_sources s WHERE s.chat_id = c.id)
-                """
-            )
+            if affected_chat_ids:
+                cur.execute(
+                    """
+                    DELETE FROM chats c
+                    WHERE c.id = ANY(%s)
+                      AND NOT EXISTS (SELECT 1 FROM chat_sources s WHERE s.chat_id = c.id)
+                    """,
+                    (affected_chat_ids,),
+                )
 
     def create_chat(self, *, source_channel_ids: list[UUID], voice_channel_id: UUID | None) -> Chat:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:

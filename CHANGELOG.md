@@ -6,6 +6,28 @@ All notable changes to this project are documented here. The format follows
 
 ## [0.2.0] — 2026-08-20
 
+### Upgrading from 0.1.x — read this before `docker compose up`
+
+Three migrations (`0006`–`0008`) apply **automatically** the first time any 0.2.0 process
+touches the database — there is no prompt and no manual step. Back up first:
+
+```bash
+docker compose exec -T postgres pg_dump -U aac askanychannel > backup-0.1.sql
+```
+
+- **`0007` is not reversible.** It backfills each chat's channel into the new `chat_sources`
+  table and then **drops `chats.channel_id`**. Downgrading to 0.1.x afterwards requires
+  restoring the dump above — 0.1.x cannot read the 0.2.0 schema.
+- **`0006` rewrites the whole `chunks` table.** Adding the generated `tsvector` column forces a
+  full table rewrite under an exclusive lock, then builds a GIN index. On a large corpus expect
+  the first start to block for minutes and to need roughly double the `chunks` table's disk
+  while it runs. **Let it finish** — interrupting a migration is far worse than waiting.
+- `0008` just adds two nullable/defaulted columns to `channels`; it is instant.
+
+Nothing else about the upgrade is breaking: existing chats keep their history and citations,
+dataset bundles built by 0.1.x still load unchanged (`schema_version` is still `1`), and every
+0.1.x CLI command keeps its behaviour.
+
 ### Added
 
 - Hybrid retrieval: vector search fused with full-text search (Reciprocal Rank Fusion) via a

@@ -247,6 +247,53 @@ def test_answer_does_not_persist_assistant_turn_when_provider_raises_mid_stream(
     assert store.usage_events == []
 
 
+def test_answer_records_usage_and_partial_text_when_the_consumer_disconnects_mid_stream():
+    # An SSE client hanging up (closed tab, proxy timeout) closes the generator. The provider
+    # call is already billed by then, so abandoning the write would make the spend invisible and
+    # leave the persisted user turn with no reply at all.
+    channel = _make_channel()
+    store = FakeVectorStore(channel=channel)
+    _seed_chat(store, source_channel_ids=[channel.id])
+    embedding_provider, chat_provider = _providers(
+        stream_chunks=make_chat_chunks(["first ", "second ", "third"])
+    )
+
+    result = _answer(store, embedding_provider, chat_provider)
+    stream = result.text_stream
+    next(stream)  # consume one token, then walk away
+    stream.close()
+
+    assistant = [m for m in store.messages if m.role == "assistant"]
+    assert len(assistant) == 1
+    assert assistant[0].content == "first "  # only what actually made it to the consumer
+    assert len(store.usage_events) == 1
+
+
+def test_ask_records_usage_when_the_consumer_disconnects_mid_stream():
+    # /ask persists nothing else, so the usage row is the ONLY record that the spend happened.
+    channel = _make_channel()
+    store = FakeVectorStore(channel=channel)
+    embedding_provider, chat_provider = _providers(
+        stream_chunks=make_chat_chunks(["first ", "second"])
+    )
+
+    result = ask(
+        store,
+        embedding_provider,
+        chat_provider,
+        scope=ChatScope(source_channel_ids=(channel.id,), voice_channel_id=None),
+        user_text="hi",
+        chat_model="gpt-4.1-mini",
+    )
+    stream = result.text_stream
+    next(stream)
+    stream.close()
+
+    assert len(store.usage_events) == 1
+    assert store.usage_events[0].chat_id is None
+    assert store.messages == []
+
+
 # --- multi-source scope: voice ordering, filtering, per-source quota ----------------------
 
 

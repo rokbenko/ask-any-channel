@@ -49,6 +49,25 @@ def test_delete_channel_removes_videos_and_its_only_source_chat_and_messages():
     assert store.list_messages(chat.id) == []
 
 
+def test_delete_channel_does_not_reap_a_chat_the_user_emptied_himself():
+    # Regression: the orphan sweep used to be global ("any chat with zero sources"), so a chat
+    # the user had deliberately cleared in the sidebar was destroyed — with all its messages —
+    # by the next deletion of a completely unrelated channel. The sweep is now scoped to the
+    # chats the deleted channel actually fed.
+    a, b = _make_channel("A"), _make_channel("B")
+    store = FakeVectorStore()
+    store.channels[a.id] = a
+    store.channels[b.id] = b
+    emptied = store.create_chat(source_channel_ids=[b.id], voice_channel_id=None)
+    store.add_message(chat_id=emptied.id, role="user", content="keep me")
+    store.set_chat_scope(emptied.id, source_channel_ids=[], voice_channel_id=None)
+
+    store.delete_channel(a.id)  # unrelated channel
+
+    assert emptied.id in store.chats
+    assert store.list_messages(emptied.id) != []
+
+
 def test_delete_channel_shrinks_a_multi_source_chat_and_clears_voice_if_it_pointed_here():
     a, b = _make_channel("A"), _make_channel("B")
     store = FakeVectorStore()

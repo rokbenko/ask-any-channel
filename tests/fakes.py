@@ -70,6 +70,9 @@ class FakeVectorStore:
         )
         return [r for r in self._search_results if r.channel_id in channel_ids][:top_k]
 
+    def list_all_channels(self) -> list[Channel]:
+        return list(self.channels.values())
+
     def list_channels(self):
         return [
             ChannelSummary(
@@ -274,8 +277,14 @@ class FakeVectorStore:
 
         orphaned_chat_ids: set[UUID] = set()
         for chat_id, chat in list(self.chats.items()):
-            remaining_sources = [cid for cid in chat.source_channel_ids if cid != channel_id]
             voice = None if chat.voice_channel_id == channel_id else chat.voice_channel_id
+            if channel_id not in chat.source_channel_ids:
+                # Untouched by this deletion. Mirrors the real store's id-scoped orphan sweep:
+                # a chat the USER emptied in the sidebar is not this delete's to reap.
+                if voice != chat.voice_channel_id:
+                    self.chats[chat_id] = replace(chat, voice_channel_id=voice)
+                continue
+            remaining_sources = [cid for cid in chat.source_channel_ids if cid != channel_id]
             if not remaining_sources:
                 orphaned_chat_ids.add(chat_id)
                 del self.chats[chat_id]

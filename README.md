@@ -217,6 +217,11 @@ All settings come from `.env` (copy `.env.example` to start) via `core/config.py
 Releases are tagged `vX.Y.Z` on `main`; see [CHANGELOG.md](CHANGELOG.md). `aac --version`
 prints the running version.
 
+**Upgrading an existing install?** Migrations apply automatically on first start, and the
+0.1.x → 0.2.0 step includes one that cannot be reversed. Back up with `docker compose exec -T
+postgres pg_dump -U aac askanychannel > backup.sql` first, and read the "Upgrading" note at the
+top of [CHANGELOG.md](CHANGELOG.md).
+
 ## Add your favorite creator
 
 Anyone can build a dataset bundle for a channel and share it via the community registry, so

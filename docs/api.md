@@ -39,10 +39,13 @@ bare handle, full `UC…` channel id, or the channel's UUID.
 | `POST /chats/{id}/messages` | Body `{"question": "..."}`. Streams the answer over SSE (see below) and persists both turns, same as the UI. |
 | `POST /ask` | Body `{"sources": [ref, ...], "voice": ref \| null, "question": "..."}`. Stateless one-shot: no chat is created, nothing is persisted except a usage record — the endpoint for embedding a single Q&A widget with no session state of your own. |
 
-`POST /chats` and `POST /chats/{id}/messages` require the bearer token when `API_TOKEN` is
-set; `GET /channels*` and `POST /ask` are intentionally open even then, since `/ask` is the
-embed-on-a-public-page endpoint — gate it at the reverse-proxy/CORS level instead if you need
-to restrict it.
+`POST /chats`, `POST /chats/{id}/messages`, and `POST /ask` all require the bearer token when
+`API_TOKEN` is set. `GET /channels` and `GET /channels/{ref}` stay open either way — they
+return only public channel metadata, and an embed needs them to render its source picker.
+
+For a public embed you therefore have to leave `API_TOKEN` unset: a bearer token shipped to a
+browser is visible in the page source, so it authenticates nobody. Gate abuse at the reverse
+proxy instead — see the warning under "Example: embed it on a page".
 
 ## Streaming format (SSE)
 
@@ -75,6 +78,23 @@ curl -N -X POST http://127.0.0.1:8000/api/v1/ask \
 `-H "Authorization: Bearer $API_TOKEN"` if you've set one.
 
 ## Example: embed it on a page
+
+> **⚠️ Before you expose this beyond localhost.** Every `/ask` request spends **your** API key,
+> and this API has no built-in rate limit, request quota, or spend cap. A public, unauthenticated
+> `/ask` is an endpoint any visitor can run in a loop against your bill. Before you put it on a
+> public page:
+>
+> - Put rate limiting in front of it — nginx `limit_req`, Caddy `rate_limit`, or Cloudflare.
+>   Also set `client_max_body_size` (or the equivalent) there: this app applies no request body
+>   size limit of its own.
+> - Set a hard monthly spend limit in your OpenAI/Anthropic dashboard. That is the only ceiling
+>   that cannot be bypassed by a bug in front of it.
+> - Set `CORS_ORIGINS` to the exact origins you embed on. It is a browser-side control only — it
+>   stops other *sites* using your endpoint, not `curl` — so it is a complement to the rate
+>   limit, never a replacement.
+>
+> `usage_events` records the cost of every answer, so `SELECT SUM(est_cost_usd) FROM
+> usage_events WHERE created_at > now() - interval '1 day'` is a quick way to watch actual spend.
 
 A minimal SSE client using `fetch` + a `ReadableStream` reader — `EventSource` can't send a
 POST body, so this parses the `event:`/`data:` frames by hand.

@@ -259,6 +259,33 @@ def test_chats_requires_bearer_token_when_api_token_is_set():
     assert authenticated.status_code == 201
 
 
+def test_ask_requires_bearer_token_when_api_token_is_set():
+    # Pins the auth boundary docs/api.md documents. /ask is the endpoint people put on a public
+    # page, so which side of the token it sits on has to be asserted, not assumed — the docs
+    # once claimed it was open while the route required a token.
+    channel = _make_channel()
+    store = FakeVectorStore(channel=channel)
+    client = _client(store=store, settings=_settings(api_token="secret"))
+    body = {"sources": [channel.handle], "question": "hi"}
+
+    assert client.post("/api/v1/ask", json=body).status_code == 401
+
+    authenticated = client.post(
+        "/api/v1/ask", json=body, headers={"Authorization": "Bearer secret"}
+    )
+    assert authenticated.status_code == 200
+
+
+def test_channels_stay_open_even_when_api_token_is_set():
+    # The other half of the same documented boundary: an embed needs the channel list to render
+    # its source picker, so GET /channels* is deliberately outside the token.
+    channel = _make_channel()
+    store = FakeVectorStore(channel=channel)
+    client = _client(store=store, settings=_settings(api_token="secret"))
+
+    assert client.get("/api/v1/channels").status_code == 200
+
+
 def test_chats_open_when_api_token_unset():
     channel = _make_channel()
     store = FakeVectorStore(channel=channel)

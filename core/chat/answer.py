@@ -111,12 +111,19 @@ def _probe_unselected_channels(
 ) -> list[Channel]:
     """ "Try adding X" detection: one extra vector-mode search over ingested channels NOT in
     the current scope, reusing the question embedding (zero extra API cost). Returns channels
-    whose best-matching chunk clears PROBE_MIN_SCORE, in score order, deduped."""
+    whose best-matching chunk clears PROBE_MIN_SCORE, in score order, deduped.
+
+    Runs on every turn because the candidate NAMES go into the system prompt (prompt.py's
+    "WHEN THE CONTEXT DOESN'T COVER IT" section) — the model needs them to phrase the
+    suggestion, so this can't be deferred until after we know the answer cited nothing.
+    list_all_channels(), not list_channels(): the latter runs a COUNT(*) over chunks per
+    channel for the Channels page, which on a hot per-message path is pure waste — only ids
+    and display names are needed here."""
     selected_ids = {c.id for c in sources}
     unselected = {
-        cs.channel.id: cs.channel
-        for cs in store.list_channels()
-        if cs.channel.id not in selected_ids
+        channel.id: channel
+        for channel in store.list_all_channels()
+        if channel.id not in selected_ids
     }
     if not unselected:
         return []
@@ -275,18 +282,7 @@ def answer(
     )
     disclosure = disclosure_string(_display_name(voice_channel)) if voice_channel else None
 
-    def _stream() -> Iterator[str]:
-        started = time.perf_counter()
-        parts: list[str] = []
-        tokens_in: int | None = None
-        tokens_out: int | None = None
-        for chunk in chat_provider.stream_chat(messages, model=chat_model):
-            if chunk.text_delta:
-                parts.append(chunk.text_delta)
-                yield chunk.text_delta
-            if chunk.usage is not None:
-                tokens_in, tokens_out = chunk.usage.tokens_in, chunk.usage.tokens_out
-
+    def _persist(parts: list[str], tokens_in: int | None, tokens_out: int | None, started: float):
         full_text = "".join(parts)
         citations = parse_citations(full_text, context)
         est_cost = estimate_cost_usd(chat_model, tokens_in, tokens_out)
@@ -331,6 +327,30 @@ def answer(
             started=started,
         )
 
+    def _stream() -> Iterator[str]:
+        started = time.perf_counter()
+        parts: list[str] = []
+        tokens_in: int | None = None
+        tokens_out: int | None = None
+        try:
+            for chunk in chat_provider.stream_chat(messages, model=chat_model):
+                if chunk.text_delta:
+                    parts.append(chunk.text_delta)
+                    yield chunk.text_delta
+                if chunk.usage is not None:
+                    tokens_in, tokens_out = chunk.usage.tokens_in, chunk.usage.tokens_out
+        except GeneratorExit:
+            # The consumer hung up mid-stream (closed browser tab, proxy timeout, an SSE client
+            # disconnecting). The provider call already happened and is already billed, so the
+            # partial answer and — more importantly — the usage row must still be written:
+            # otherwise the spend is invisible to `aac status` and any future cost cap, and the
+            # chat is left with the user turn (persisted synchronously above) and no reply.
+            # NOT a bare `finally`: a provider EXCEPTION must still persist nothing, so that a
+            # failed turn doesn't leave a truncated answer masquerading as a real one.
+            _persist(parts, tokens_in, tokens_out, started)
+            raise
+        _persist(parts, tokens_in, tokens_out, started)
+
     # The generator body doesn't run until first next(), so `result` is bound by the time the
     # closure reads it — no placeholder-then-reassign needed.
     result = AnswerResult(
@@ -365,18 +385,7 @@ def ask(
     context = flatten_context(groups)
     disclosure = disclosure_string(_display_name(voice_channel)) if voice_channel else None
 
-    def _stream() -> Iterator[str]:
-        started = time.perf_counter()
-        parts: list[str] = []
-        tokens_in: int | None = None
-        tokens_out: int | None = None
-        for chunk in chat_provider.stream_chat(messages, model=chat_model):
-            if chunk.text_delta:
-                parts.append(chunk.text_delta)
-                yield chunk.text_delta
-            if chunk.usage is not None:
-                tokens_in, tokens_out = chunk.usage.tokens_in, chunk.usage.tokens_out
-
+    def _persist(parts: list[str], tokens_in: int | None, tokens_out: int | None, started: float):
         full_text = "".join(parts)
         citations = parse_citations(full_text, context)
         est_cost = estimate_cost_usd(chat_model, tokens_in, tokens_out)
@@ -413,6 +422,26 @@ def ask(
             candidates=candidates,
             started=started,
         )
+
+    def _stream() -> Iterator[str]:
+        started = time.perf_counter()
+        parts: list[str] = []
+        tokens_in: int | None = None
+        tokens_out: int | None = None
+        try:
+            for chunk in chat_provider.stream_chat(messages, model=chat_model):
+                if chunk.text_delta:
+                    parts.append(chunk.text_delta)
+                    yield chunk.text_delta
+                if chunk.usage is not None:
+                    tokens_in, tokens_out = chunk.usage.tokens_in, chunk.usage.tokens_out
+        except GeneratorExit:
+            # See answer()._stream: a disconnected SSE client must still leave a usage row,
+            # since the provider call is already billed. /ask persists nothing else, so this
+            # is the ONLY record that the spend happened.
+            _persist(parts, tokens_in, tokens_out, started)
+            raise
+        _persist(parts, tokens_in, tokens_out, started)
 
     result = AnswerResult(
         text_stream=_stream(), scope=scope, voice_channel=voice_channel, disclosure=disclosure

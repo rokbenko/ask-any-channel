@@ -2,6 +2,8 @@
 token guard. Configuration flows through core.config/core.credentials only — no os.environ
 here. Tests override these via app.dependency_overrides (see apps/api/main.py::create_app)."""
 
+import hmac
+
 from fastapi import Depends, Header, HTTPException
 
 from core.config import Settings, get_settings
@@ -43,8 +45,13 @@ def require_token(
     settings: Settings = Depends(get_settings_dep),
 ) -> None:
     """API_TOKEN unset = the API is open (selfhost default, matching the rest of this
-    product's no-auth posture). Set it and every request needs `Authorization: Bearer <token>`."""
+    product's no-auth posture). Set it and every request needs `Authorization: Bearer <token>`.
+
+    hmac.compare_digest, not `!=`: plain string comparison short-circuits on the first differing
+    byte, so response timing leaks the token prefix-by-prefix. There is no rate limiting in
+    front of this, which is exactly the condition that makes such a leak practical to exploit."""
     if not settings.api_token:
         return
-    if authorization != f"Bearer {settings.api_token}":
+    expected = f"Bearer {settings.api_token}"
+    if authorization is None or not hmac.compare_digest(authorization, expected):
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
