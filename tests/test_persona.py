@@ -63,6 +63,8 @@ def _settings(**overrides) -> Settings:
         "chat_model": None,
         "raw_captions_dir": "data/raw",
         "retrieval_mode": "hybrid",
+        "api_token": None,
+        "cors_origins": (),
     }
     fields.update(overrides)
     return Settings(**fields)

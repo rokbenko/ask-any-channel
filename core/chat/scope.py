@@ -19,6 +19,7 @@ __all__ = [
     "create_chat",
     "default_voice",
     "resolve_channel_refs",
+    "resolve_voice_ref",
     "update_chat_scope",
 ]
 
@@ -72,6 +73,28 @@ def build_scope(sources: list[Channel], voice_channel_id: UUID | None) -> ChatSc
             seen.add(c.id)
             deduped_ids.append(c.id)
     return ChatScope(source_channel_ids=tuple(deduped_ids), voice_channel_id=voice_channel_id)
+
+
+def resolve_voice_ref(sources: list[Channel], voice_ref: str | None) -> UUID | None:
+    """Matches a voice ref (handle/@handle/UC id) against ALREADY-RESOLVED source channels —
+    for callers (the HTTP API) that receive voice as a string ref rather than an id. None ref
+    means Neutral. Raises InvalidVoiceError if the ref doesn't match any source; build_scope
+    still does its own id-based membership/persona check afterward, so this is only the
+    ref-to-id lookup, not a second source of truth for the validation itself."""
+    if voice_ref is None:
+        return None
+    bare = voice_ref.lstrip("@")
+    match = next(
+        (
+            c
+            for c in sources
+            if voice_ref in (c.yt_channel_id, c.handle) or c.handle in (bare, f"@{bare}")
+        ),
+        None,
+    )
+    if match is None:
+        raise InvalidVoiceError(f"Voice {voice_ref!r} must be one of the selected sources.")
+    return match.id
 
 
 def create_chat(store: VectorStore, scope: ChatScope) -> Chat:

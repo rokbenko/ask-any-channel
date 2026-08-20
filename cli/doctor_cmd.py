@@ -24,8 +24,8 @@ def doctor(
         "all",
         "--role",
         callback=_validate_role,
-        help="Which process's checks to run: all (default), worker, or ui — the same subsets "
-        "the worker and UI run at boot.",
+        help="Which process's checks to run: all (default), worker, ui, or api — the same "
+        "subsets each process runs at boot.",
     ),
 ) -> None:
     if not quiet:

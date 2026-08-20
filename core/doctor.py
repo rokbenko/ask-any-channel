@@ -248,6 +248,15 @@ ROLE_CHECKS: dict[str, tuple[Check, ...]] = {
         check_openai_key,
         check_chat_provider_key,
     ),
+    # Same subset as "ui": the API serves the same chat/search surface, so it needs the same
+    # gates (a stale embedding dim or missing chat key breaks it the same way).
+    "api": (
+        check_env_vars,
+        check_database,
+        check_embedding_dim_consistency,
+        check_openai_key,
+        check_chat_provider_key,
+    ),
 }
 
 

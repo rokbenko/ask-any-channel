@@ -17,10 +17,10 @@ WORKDIR /app
 # must fail the build loudly rather than silently re-resolve without hashes. --no-dev keeps
 # pytest/ruff out of the runtime image.
 #
-# INSTALL_EXTRAS controls whether the `ui` extra (Streamlit) is installed. Left empty
-# (worker's build) it's a plain `uv sync`; docker-compose.yml sets it to "ui" for the `ui`
-# service only, via --build-arg. One Dockerfile, not two, to avoid duplicating the node-copy/
-# uv-pin/non-root setup above and below across a second file.
+# INSTALL_EXTRAS controls whether the `ui` (Streamlit) or `api` (FastAPI/uvicorn) extra is
+# installed. Left empty (worker's build) it's a plain `uv sync`; docker-compose.yml sets it to
+# "ui"/"api" for those services only, via --build-arg. One Dockerfile, not three, to avoid
+# duplicating the node-copy/uv-pin/non-root setup above and below across more files.
 COPY pyproject.toml uv.lock ./
 ARG INSTALL_EXTRAS=""
 # pyarrow/streamlit wheels are 100MB+; uv's 30s default HTTP timeout can be tight on a slow

@@ -184,6 +184,8 @@ All settings come from `.env` (copy `.env.example` to start) via `core/config.py
 | `DATABASE_URL` | Postgres connection string. The compose Postgres service is published on **`127.0.0.1:5432` only** — Docker port publishing bypasses host firewalls, so it's deliberately not reachable from the network. |
 | `INSTANCE_MODE` | `selfhost` (default, no auth/quotas) or `cloud` (future, not built). |
 | `RAW_CAPTIONS_DIR` | Where cached `.vtt` caption files are written (default `data/raw`). Gitignored, safe to delete. |
+| `API_TOKEN` | Only used by the optional `api` compose service ([docs/api.md](docs/api.md)). Unset = the HTTP API is open; set it to require a bearer token. |
+| `CORS_ORIGINS` | Comma-separated origins the HTTP API accepts cross-origin requests from. Empty (default) = none. |
 
 Releases are tagged `vX.Y.Z` on `main`; see [CHANGELOG.md](CHANGELOG.md). `aac --version`
 prints the running version.
@@ -406,14 +408,17 @@ you need it reachable from elsewhere. Streamlit's usage telemetry is switched of
 ### Compose services and health
 
 `docker compose --profile ui up -d` runs three services: `postgres` (pgvector, loopback-only),
-`worker` (the polling ingest daemon), and `ui` (Streamlit, loopback-only on `8501`). `worker`
-and `ui` wait for Postgres to be healthy, run `aac doctor --role worker|ui` at boot (a failing
-check logs one line and exits, and `restart: unless-stopped` retries with backoff — read
-`docker compose logs worker`), and report the same checks as container health every minute
-(`docker compose ps`). Note that Compose only *reports* health; it doesn't restart an unhealthy
-container. Containers run as uid 1000 with `data/` and `datasets/` bind-mounted from the host —
-both directories exist in a fresh clone so they're host-owned before the container touches them;
-if your host user isn't uid 1000, `aac doctor` tells you the `chown` to run.
+`worker` (the polling ingest daemon), and `ui` (Streamlit, loopback-only on `8501`). A fourth,
+`api` (FastAPI, loopback-only on `8000` — see [docs/api.md](docs/api.md)), is opt-in behind its
+own profile: `docker compose --profile api up -d` (combine with `--profile ui` to run both).
+`worker`/`ui`/`api` wait for Postgres to be healthy, run `aac doctor --role worker|ui|api` at
+boot (a failing check logs one line and exits, and `restart: unless-stopped` retries with
+backoff — read `docker compose logs worker`), and report the same checks as container health
+every minute (`docker compose ps`). Note that Compose only *reports* health; it doesn't restart
+an unhealthy container. Containers run as uid 1000 with `data/` and `datasets/` bind-mounted
+from the host (the `api` service doesn't need either — it only ever talks to Postgres) — both
+directories exist in a fresh clone so they're host-owned before the container touches them; if
+your host user isn't uid 1000, `aac doctor` tells you the `chown` to run.
 
 ### Security notes for self-hosters
 

@@ -26,6 +26,7 @@ _ENV_VARS_TO_SCRUB_IF_BLANK = (
     "OPENAI_BASE_URL",
     "ANTHROPIC_API_KEY",
     "ANTHROPIC_BASE_URL",
+    "API_TOKEN",
 )
 
 
@@ -41,6 +42,8 @@ class Settings:
     chat_model: str | None  # None means "use the provider's default" from core/constants.py
     raw_captions_dir: str
     retrieval_mode: str
+    api_token: str | None  # unset = the HTTP API is open, no auth (selfhost default)
+    cors_origins: tuple[str, ...]  # empty = no cross-origin requests allowed
 
 
 class ConfigError(RuntimeError):
@@ -90,4 +93,10 @@ def get_settings() -> Settings:
         chat_model=os.getenv("CHAT_MODEL") or None,
         raw_captions_dir=os.getenv("RAW_CAPTIONS_DIR") or RAW_CAPTIONS_DIR,
         retrieval_mode=retrieval_mode,
+        api_token=os.getenv("API_TOKEN") or None,
+        cors_origins=tuple(
+            origin.strip()
+            for origin in (os.getenv("CORS_ORIGINS") or "").split(",")
+            if origin.strip()
+        ),
     )

@@ -238,12 +238,14 @@ def test_data_dirs_fail_names_the_directory_and_the_fix(monkeypatch, tmp_path):
 
 
 def test_role_tables_are_subsets_of_all_and_worker_skips_chat_only_checks():
-    assert set(doctor.ROLE_CHECKS) == {"all", "worker", "ui"}
+    assert set(doctor.ROLE_CHECKS) == {"all", "worker", "ui", "api"}
     for role, checks in doctor.ROLE_CHECKS.items():
         assert set(checks) <= set(doctor.ALL_CHECKS), role
     assert doctor.check_chat_provider_key not in doctor.ROLE_CHECKS["worker"]
     assert doctor.check_yt_dlp_and_js_runtime not in doctor.ROLE_CHECKS["ui"]
     assert doctor.check_data_dirs_writable in doctor.ROLE_CHECKS["worker"]
+    # The api role serves the same chat/search surface as ui, so it needs the same gates.
+    assert doctor.ROLE_CHECKS["api"] == doctor.ROLE_CHECKS["ui"]
 
 
 def test_unknown_role_is_a_programming_error():

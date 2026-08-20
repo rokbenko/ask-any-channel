@@ -80,5 +80,34 @@ services:
       retries: 3
       start_period: 20s
 
+  api:
+    build:
+      context: .
+      args:
+        # Only the api image needs FastAPI/uvicorn — see Dockerfile's INSTALL_EXTRAS.
+        INSTALL_EXTRAS: "api"
+    # --factory: apps/api/main.py deliberately has no module-level `app` object (constructing
+    # one would call the real get_settings() at import time) — uvicorn calls create_app() itself.
+    command: ["uvicorn", "apps.api.main:create_app", "--factory", "--host=0.0.0.0", "--port=8000"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://aac:${POSTGRES_PASSWORD:-aac}@postgres:5432/askanychannel
+    ports:
+      # Loopback only, same rationale as postgres/ui above — reverse-proxy exposure is a
+      # deployment concern, not something compose port publishing should do directly.
+      - "127.0.0.1:8000:8000"
+    profiles: ["api"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      # Same subset the API runs at boot (core/doctor.py ROLE_CHECKS "api").
+      test: ["CMD", "aac", "doctor", "--quiet", "--role", "api"]
+      interval: 60s
+      timeout: 30s
+      retries: 3
+      start_period: 20s
+
 volumes:
   pgdata:

@@ -40,6 +40,8 @@ def _settings(*, openai_key: str | None) -> Settings:
         chat_model=None,
         raw_captions_dir="data/raw",
         retrieval_mode="hybrid",
+        api_token=None,
+        cors_origins=(),
     )
 
 
