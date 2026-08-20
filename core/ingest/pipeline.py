@@ -452,7 +452,18 @@ def _post_update_refresh(
     ensure_suggested_questions's docstring; the P3-era "never regenerate on update" note was
     about the delta-only in-memory sample at build time, not this Postgres-backed refresh) and
     refreshes the voice profile only if the corpus grew enough to be worth it."""
-    settings = get_settings()
+    # Inside the guard, not above it: get_settings() raises ConfigError on a bad/absent
+    # environment, and this function's whole contract is that it cannot fail an update that
+    # already succeeded. _try_build_style_profile calls get_settings() inside its own try for
+    # the same reason; this one used to sit outside, so a config problem took the job down
+    # with it — and the unit tests only passed because load_dotenv() found the developer's
+    # own .env, which a clean checkout (or CI) doesn't have.
+    try:
+        settings = get_settings()
+    except Exception:
+        logger.warning("post-update refresh skipped for channel %s", channel.id, exc_info=True)
+        return
+
     try:
         ensure_suggested_questions(store, settings, credentials, channel, force=True)
     except Exception:
