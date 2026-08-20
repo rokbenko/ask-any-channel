@@ -42,6 +42,7 @@ def _settings(*, openai_key: str | None) -> Settings:
         retrieval_mode="hybrid",
         api_token=None,
         cors_origins=(),
+        auto_ingest_interval_hours=24.0,
     )
 
 
@@ -125,6 +126,42 @@ def test_ensure_treats_stored_empty_list_as_already_attempted():
     settings = _settings(openai_key=None)
 
     assert ensure_suggested_questions(store, settings, CredentialsProvider(settings), channel) == []
+
+
+def test_ensure_force_regenerates_even_when_already_stored(monkeypatch):
+    channel = _make_channel(branding={BRANDING_KEY: ["Old question?"]})
+    store = FakeVectorStore(channel=channel)
+    monkeypatch.setattr(
+        store, "list_sample_chunk_texts", lambda channel_id: ["some excerpt"], raising=False
+    )
+    settings = _settings(openai_key="sk-test")
+    fake_provider = FakeLLMProvider(embedding_dim=4, chat_reply="New question?")
+    monkeypatch.setattr(
+        "core.chat.suggestions.build_chat_provider_if_configured",
+        lambda settings, credentials: (fake_provider, "gpt-4.1-mini"),
+    )
+
+    result = ensure_suggested_questions(
+        store, settings, CredentialsProvider(settings), channel, force=True
+    )
+
+    assert result == ["New question?"]
+    assert store.get_channel(channel.id).branding[BRANDING_KEY] == ["New question?"]
+
+
+def test_ensure_without_force_does_not_call_the_provider_when_already_stored(monkeypatch):
+    channel = _make_channel(branding={BRANDING_KEY: ["Old question?"]})
+    store = FakeVectorStore(channel=channel)
+    settings = _settings(openai_key="sk-test")
+
+    def _explode(settings, credentials):
+        raise AssertionError("should not build a provider when questions are already stored")
+
+    monkeypatch.setattr("core.chat.suggestions.build_chat_provider_if_configured", _explode)
+
+    result = ensure_suggested_questions(store, settings, CredentialsProvider(settings), channel)
+
+    assert result == ["Old question?"]
 
 
 def test_ensure_returns_empty_without_persisting_when_no_chat_key():

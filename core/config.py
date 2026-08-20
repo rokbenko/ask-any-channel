@@ -10,7 +10,12 @@ from functools import lru_cache
 
 from dotenv import load_dotenv
 
-from core.constants import DEFAULT_RETRIEVAL_MODE, RAW_CAPTIONS_DIR, VALID_RETRIEVAL_MODES
+from core.constants import (
+    DEFAULT_AUTO_INGEST_INTERVAL_HOURS,
+    DEFAULT_RETRIEVAL_MODE,
+    RAW_CAPTIONS_DIR,
+    VALID_RETRIEVAL_MODES,
+)
 
 VALID_INSTANCE_MODES = ("selfhost", "cloud")
 VALID_CHAT_PROVIDERS = ("openai", "anthropic")
@@ -44,6 +49,7 @@ class Settings:
     retrieval_mode: str
     api_token: str | None  # unset = the HTTP API is open, no auth (selfhost default)
     cors_origins: tuple[str, ...]  # empty = no cross-origin requests allowed
+    auto_ingest_interval_hours: float  # 0 = auto-ingest off globally
 
 
 class ConfigError(RuntimeError):
@@ -82,6 +88,18 @@ def get_settings() -> Settings:
             f"RETRIEVAL_MODE must be one of {VALID_RETRIEVAL_MODES}, got {retrieval_mode!r}"
         )
 
+    raw_interval = os.getenv("AUTO_INGEST_INTERVAL_HOURS")
+    try:
+        auto_ingest_interval_hours = (
+            float(raw_interval) if raw_interval else DEFAULT_AUTO_INGEST_INTERVAL_HOURS
+        )
+    except ValueError:
+        raise ConfigError(
+            f"AUTO_INGEST_INTERVAL_HOURS must be a number, got {raw_interval!r}"
+        ) from None
+    if auto_ingest_interval_hours < 0:
+        raise ConfigError("AUTO_INGEST_INTERVAL_HOURS must be >= 0 (0 disables it)")
+
     return Settings(
         instance_mode=instance_mode,
         database_url=database_url,
@@ -99,4 +117,5 @@ def get_settings() -> Settings:
             for origin in (os.getenv("CORS_ORIGINS") or "").split(",")
             if origin.strip()
         ),
+        auto_ingest_interval_hours=auto_ingest_interval_hours,
     )

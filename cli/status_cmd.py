@@ -19,10 +19,23 @@ def status() -> None:
         table.add_column("Title")
         table.add_column("Handle")
         table.add_column("Video statuses")
+        table.add_column("Auto-update")
+        table.add_column("Last checked")
 
         for cs in summary.channels:
             counts = ", ".join(f"{c.status}={c.count}" for c in cs.video_status_counts)
-            table.add_row(cs.channel.title or "-", cs.channel.handle or "-", counts or "-")
+            last_checked = (
+                cs.channel.last_checked_at.strftime("%Y-%m-%d %H:%M")
+                if cs.channel.last_checked_at
+                else "never"
+            )
+            table.add_row(
+                cs.channel.title or "-",
+                cs.channel.handle or "-",
+                counts or "-",
+                "on" if cs.channel.auto_update else "off",
+                last_checked,
+            )
 
         console.print(table)
 

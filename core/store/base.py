@@ -202,6 +202,19 @@ class VectorStore(Protocol):
 
     def set_channel_branding(self, channel_id: UUID, patch: dict) -> Channel: ...
 
+    def list_auto_update_channels(self) -> list[Channel]:
+        """Channels with a primary channel and auto_update enabled — the scheduler's candidate
+        set for `core.worker.scheduler.run_auto_ingest_tick`."""
+        ...
+
+    def set_channel_auto_update(self, channel_id: UUID, enabled: bool) -> Channel: ...
+
+    def mark_channel_checked(self, channel_id: UUID, at: datetime) -> None:
+        """Records "we last enqueued an auto-update check at `at`" — not "the channel was
+        actually updated"; a due-but-active-job skip still marks the channel checked, so the
+        scheduler doesn't retry it every tick."""
+        ...
+
     def list_sample_chunk_texts(
         self, channel_id: UUID, *, max_videos: int = 5, max_chunks_per_video: int = 3
     ) -> list[str]: ...

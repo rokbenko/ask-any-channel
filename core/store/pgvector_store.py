@@ -513,6 +513,25 @@ class PgVectorStore:
             row = cur.fetchone()
         return Channel(**row)
 
+    def list_auto_update_channels(self) -> list[Channel]:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM channels WHERE auto_update = true")
+            rows = cur.fetchall()
+        return [Channel(**row) for row in rows]
+
+    def set_channel_auto_update(self, channel_id: UUID, enabled: bool) -> Channel:
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute(
+                "UPDATE channels SET auto_update = %s WHERE id = %s RETURNING *",
+                (enabled, channel_id),
+            )
+            row = cur.fetchone()
+        return Channel(**row)
+
+    def mark_channel_checked(self, channel_id: UUID, at: datetime) -> None:
+        with get_connection() as conn:
+            conn.execute("UPDATE channels SET last_checked_at = %s WHERE id = %s", (at, channel_id))
+
     def list_sample_chunk_texts(
         self, channel_id: UUID, *, max_videos: int = 5, max_chunks_per_video: int = 3
     ) -> list[str]:

@@ -91,6 +91,31 @@ def test_daemon_dispatches_update_jobs_to_run_update_job(monkeypatch):
     assert seen == [f"update:datasets/some/_updates/{job.id}"]
 
 
+def test_daemon_calls_the_auto_ingest_scheduler_tick_and_survives_a_tick_exception(monkeypatch):
+    store = FakeVectorStore()
+    calls: list[float] = []
+    stop = threading.Event()
+
+    def _boom(store_, *, now, interval_hours):
+        calls.append(interval_hours)
+        stop.set()  # prove the tick ran before the loop has any other reason to exit
+        raise RuntimeError("scheduler bug")
+
+    monkeypatch.setattr(daemon, "run_auto_ingest_tick", _boom)
+
+    poll_and_run(
+        store,
+        credentials=None,
+        poll_interval_s=0.01,
+        stop_event=stop,
+        auto_ingest_interval_hours=2.0,
+    )
+
+    assert calls == [2.0]  # the daemon called it, with the configured interval...
+    # ...and a raised exception from the tick didn't prevent the poll loop from continuing:
+    # reaching the stop_event.wait() below the (empty) job-claim call and exiting cleanly.
+
+
 def test_daemon_exits_promptly_when_stop_is_set_and_queue_is_empty():
     store = FakeVectorStore()
     stop = threading.Event()

@@ -32,4 +32,9 @@ def worker() -> None:
         logger.error("worker not started — fix the failing check(s) above and restart")
         sys.exit(1)
 
-    poll_and_run(PgVectorStore(), CredentialsProvider(get_settings()))
+    settings = get_settings()
+    poll_and_run(
+        PgVectorStore(),
+        CredentialsProvider(settings),
+        auto_ingest_interval_hours=settings.auto_ingest_interval_hours,
+    )

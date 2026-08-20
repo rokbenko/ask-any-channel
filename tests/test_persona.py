@@ -65,6 +65,7 @@ def _settings(**overrides) -> Settings:
         "retrieval_mode": "hybrid",
         "api_token": None,
         "cors_origins": (),
+        "auto_ingest_interval_hours": 24.0,
     }
     fields.update(overrides)
     return Settings(**fields)

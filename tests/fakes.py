@@ -196,6 +196,17 @@ class FakeVectorStore:
         self.channels[channel_id] = updated
         return updated
 
+    def list_auto_update_channels(self) -> list[Channel]:
+        return [c for c in self.channels.values() if c.auto_update]
+
+    def set_channel_auto_update(self, channel_id, enabled: bool) -> Channel:
+        updated = replace(self.channels[channel_id], auto_update=enabled)
+        self.channels[channel_id] = updated
+        return updated
+
+    def mark_channel_checked(self, channel_id, at) -> None:
+        self.channels[channel_id] = replace(self.channels[channel_id], last_checked_at=at)
+
     def list_style_sample_chunk_texts(
         self, channel_id, *, top_videos=10, chunks_per_video=5, random_chunks=30
     ) -> list[str]:

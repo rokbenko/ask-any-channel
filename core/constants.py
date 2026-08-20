@@ -96,6 +96,20 @@ MIN_BLOCKS_PER_SOURCE = 3
 PROBE_TOP_K = 3
 PROBE_MIN_SCORE = 0.35
 
+# Auto-ingest scheduler (core/worker/scheduler.py, run inside the existing aac worker poll
+# loop — no new process/dependency). How often the worker's main loop checks whether any
+# auto_update channel is due; independent of AUTO_INGEST_INTERVAL_HOURS itself.
+SCHEDULER_TICK_S = 60.0
+# Spreads due channels' actual check times across this window so many auto_update channels
+# with the same interval don't all fire in the same tick — deterministic per channel (hashed
+# from its id), not random, so it's stable across worker restarts.
+AUTO_UPDATE_JITTER_S = 900.0
+# Videos per scheduled check — small and recent-first, since auto-update exists to catch a
+# channel's newest uploads, not to re-scan its whole catalog.
+AUTO_UPDATE_LIMIT = 50
+# 0 = auto-ingest off globally, regardless of any channel's own auto_update flag.
+DEFAULT_AUTO_INGEST_INTERVAL_HOURS = 24.0
+
 
 @dataclass(frozen=True)
 class ChatModelPricing:

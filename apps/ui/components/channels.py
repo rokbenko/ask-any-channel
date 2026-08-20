@@ -176,6 +176,24 @@ def render_channel_card(
                     else ""
                 )
             )
+            auto_update = st.checkbox(
+                "Auto-update",
+                value=channel.auto_update,
+                key=f"auto-update-{channel.id}",
+                help="Periodically check this channel for new videos on its own "
+                "(AUTO_INGEST_INTERVAL_HOURS) — off by default, polite to YouTube.",
+            )
+            if auto_update != channel.auto_update:
+                store.set_channel_auto_update(channel.id, auto_update)
+                st.rerun()
+            st.caption(
+                "Last checked "
+                + (
+                    f"{channel.last_checked_at:%Y-%m-%d %H:%M}"
+                    if channel.last_checked_at
+                    else "never"
+                )
+            )
 
         if latest_job is not None and latest_job.status in _ACTIVE_STATUSES:
             _render_active_job_section(store, latest_job)

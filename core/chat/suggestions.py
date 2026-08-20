@@ -76,14 +76,19 @@ def ensure_suggested_questions(
     settings: Settings,
     credentials: CredentialsProvider,
     channel: Channel,
+    *,
+    force: bool = False,
 ) -> list[str]:
     """Lazy fallback for channels whose build had no chat key at the time: returns the stored
     questions if the key is present in branding (an empty list means "tried, the model gave
     nothing usable" — don't bill again on every render), else generates and persists them from
     chunks already loaded in Postgres. Never raises for a missing key — no chips, not a broken
     chat page. Only persists after an actual generation attempt: a channel with no embedded
-    chunks yet returns [] without marking itself tried, so it's retried once content lands."""
-    if BRANDING_KEY in channel.branding:
+    chunks yet returns [] without marking itself tried, so it's retried once content lands.
+    force=True (the auto-update post-refresh path) regenerates from the FULL current catalog
+    even if questions are already stored — unlike the build-time in-memory-delta path, this
+    reads Postgres, so it isn't limited to just the newly-ingested videos."""
+    if BRANDING_KEY in channel.branding and not force:
         return sanitize_questions(channel.branding[BRANDING_KEY])
 
     configured = build_chat_provider_if_configured(settings, credentials)

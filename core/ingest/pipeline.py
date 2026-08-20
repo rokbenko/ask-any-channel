@@ -23,6 +23,7 @@ from core.chat.suggestions import (
     BRANDING_KEY as SUGGESTIONS_KEY,
 )
 from core.chat.suggestions import (
+    ensure_suggested_questions,
     generate_suggested_questions,
     sanitize_questions,
 )
@@ -59,7 +60,7 @@ from core.ingest.channel_source import list_channel_videos, resolve_channel_inpu
 from core.ingest.chunker import ChunkDraft, chunk_timed_words
 from core.ingest.vtt_parser import cues_to_clean_text, dedupe_rolling_cues, parse_vtt
 from core.models import Channel, IngestJob, Video
-from core.persona import ensure_style_profile
+from core.persona import ensure_style_profile, get_persona, is_profile_stale
 from core.providers.base import LLMProvider
 from core.providers.factory import build_chat_provider_if_configured
 from core.providers.openai_provider import OpenAIProvider
@@ -442,6 +443,33 @@ def run_ingest_job(
     return store.get_job(job.id)
 
 
+def _post_update_refresh(
+    store: VectorStore, credentials: CredentialsProvider, channel: Channel
+) -> None:
+    """Best-effort, same broad-except contract as _try_generate_suggested_questions/
+    _try_build_style_profile: only reached when an incremental update actually added new
+    videos. Regenerates suggested questions from the FULL current catalog (force=True — see
+    ensure_suggested_questions's docstring; the P3-era "never regenerate on update" note was
+    about the delta-only in-memory sample at build time, not this Postgres-backed refresh) and
+    refreshes the voice profile only if the corpus grew enough to be worth it."""
+    settings = get_settings()
+    try:
+        ensure_suggested_questions(store, settings, credentials, channel, force=True)
+    except Exception:
+        logger.warning(
+            "suggested-question refresh skipped for channel %s", channel.id, exc_info=True
+        )
+
+    try:
+        current = store.get_channel(channel.id)  # branding may have just changed above
+        if current is not None and is_profile_stale(
+            get_persona(current), store.count_channel_chunks(channel.id)
+        ):
+            ensure_style_profile(store, credentials, settings, current, force=True)
+    except Exception:
+        logger.warning("style-profile refresh skipped for channel %s", channel.id, exc_info=True)
+
+
 def run_update_job(
     store: VectorStore, credentials: CredentialsProvider, job: IngestJob, *, out_dir: Path
 ) -> IngestJob:
@@ -480,5 +508,6 @@ def run_update_job(
 
     bundle = read_bundle(out_dir)
     load_bundle_into_store(store, credentials, bundle, heartbeat=lambda: store.update_job(job.id))
+    _post_update_refresh(store, credentials, channel)
 
     return store.get_job(job.id)

@@ -15,6 +15,8 @@ class Channel:
     thumbnail_url: str | None
     branding: dict
     created_at: datetime
+    auto_update: bool = False
+    last_checked_at: datetime | None = None  # when an incremental-update check was last enqueued
 
 
 @dataclass

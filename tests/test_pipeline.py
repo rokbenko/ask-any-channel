@@ -171,6 +171,53 @@ def test_run_update_job_finishes_done_with_no_new_videos(monkeypatch, tmp_path):
     assert result.progress["stage"] == "no-new-videos"
 
 
+def test_run_update_job_calls_post_update_refresh_when_new_videos_processed(monkeypatch, tmp_path):
+    channel = _make_channel()
+    store = FakeVectorStore(channel=channel)
+    job = store.create_job(
+        channel_id=channel.id, payload={"channel_input": "@some", "kind": "update"}
+    )
+    built: list[str] = []
+    _stub_pipeline(monkeypatch, store, channel, ["aaaaaaaaaaa"], built=built)
+
+    calls = []
+    monkeypatch.setattr(
+        pipeline,
+        "_post_update_refresh",
+        lambda store_, credentials, channel_: calls.append(channel_.id),
+    )
+
+    run_update_job(store, credentials=None, job=job, out_dir=tmp_path / "u")
+
+    assert calls == [channel.id]
+
+
+def test_run_update_job_skips_post_update_refresh_with_no_new_videos(monkeypatch, tmp_path):
+    channel = _make_channel()
+    store = FakeVectorStore(channel=channel)
+    v = store.upsert_video(
+        channel_id=channel.id,
+        yt_video_id="aaaaaaaaaaa",
+        title="a",
+        published_at=None,
+        duration_s=10,
+        view_count=1,
+    )
+    store.set_video_status(v.id, "embedded")
+    job = store.create_job(
+        channel_id=channel.id, payload={"channel_input": "@some", "kind": "update"}
+    )
+    built: list[str] = []
+    _stub_pipeline(monkeypatch, store, channel, ["aaaaaaaaaaa"], built=built)
+
+    calls = []
+    monkeypatch.setattr(pipeline, "_post_update_refresh", lambda *a: calls.append(a))
+
+    run_update_job(store, credentials=None, job=job, out_dir=tmp_path / "u")
+
+    assert calls == []
+
+
 @pytest.mark.parametrize("terminal_status", ["embedded", "no_captions"])
 def test_processed_video_ids_only_count_terminal_content_states(terminal_status):
     channel = _make_channel()

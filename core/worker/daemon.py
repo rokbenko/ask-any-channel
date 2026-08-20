@@ -14,20 +14,28 @@ than exiting (compose would restart us, but in a tight loop with no diagnostics)
 Daemon-claimed jobs always derive their bundle output path from the job's channel_input
 (deterministic, via default_bundle_dir/default_update_bundle_dir) rather than any custom --out a
 CLI caller might have used when originally creating the job — the payload doesn't carry --out
-today."""
+today.
+
+Each poll iteration also (at most once every SCHEDULER_TICK_S) runs the auto-ingest scheduler
+(core.worker.scheduler.run_auto_ingest_tick) — no separate cron process, just another cheap
+check at the top of the same loop, with its own try/except so a scheduler bug can't be
+mistaken for a database outage or take the worker down."""
 
 import logging
 import signal
 import threading
+import time
+from datetime import UTC, datetime
 
 from core.config import get_settings
-from core.constants import JOB_STALE_AFTER_S, MAX_JOB_ATTEMPTS
+from core.constants import JOB_STALE_AFTER_S, MAX_JOB_ATTEMPTS, SCHEDULER_TICK_S
 from core.credentials import CredentialsProvider
 from core.dataset.bundle import default_bundle_dir, default_update_bundle_dir
 from core.ingest.pipeline import run_ingest_job, run_update_job
 from core.models import IngestJob
 from core.store.base import VectorStore
 from core.store.pgvector_store import PgVectorStore
+from core.worker.scheduler import run_auto_ingest_tick
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +75,7 @@ def poll_and_run(
     *,
     poll_interval_s: float = POLL_INTERVAL_S,
     stop_event: threading.Event | None = None,
+    auto_ingest_interval_hours: float = 0.0,
 ) -> None:
     # A caller-supplied stop_event (tests) means the caller owns process-wide signal handling
     # too — installing our own handler would clobber the test process's. The daemon's own
@@ -77,9 +86,30 @@ def poll_and_run(
         _install_signal_handlers(stop_event)
 
     logger.info(
-        "worker started (poll every %.0fs, stale after %.0fs)", poll_interval_s, JOB_STALE_AFTER_S
+        "worker started (poll every %.0fs, stale after %.0fs, auto-ingest every %.1fh)",
+        poll_interval_s,
+        JOB_STALE_AFTER_S,
+        auto_ingest_interval_hours,
     )
+    # 0.0 forces the scheduler's first tick immediately rather than waiting a full
+    # SCHEDULER_TICK_S after the worker starts.
+    last_scheduler_tick = 0.0
     while not stop_event.is_set():
+        if time.monotonic() - last_scheduler_tick >= SCHEDULER_TICK_S:
+            last_scheduler_tick = time.monotonic()
+            try:
+                enqueued = run_auto_ingest_tick(
+                    store, now=datetime.now(UTC), interval_hours=auto_ingest_interval_hours
+                )
+                if enqueued:
+                    logger.info(
+                        "auto-ingest scheduler enqueued %d job(s): %s", len(enqueued), enqueued
+                    )
+            except Exception:
+                # A scheduler bug must never masquerade as "database unreachable" (the poll
+                # try/except below) or take the whole worker down — log and keep polling jobs.
+                logger.exception("auto-ingest scheduler tick failed — continuing")
+
         try:
             reclaimed = store.reclaim_stale_jobs(JOB_STALE_AFTER_S, max_attempts=MAX_JOB_ATTEMPTS)
             if reclaimed:
@@ -117,4 +147,9 @@ if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s"
     )
-    poll_and_run(PgVectorStore(), CredentialsProvider(get_settings()))
+    _settings = get_settings()
+    poll_and_run(
+        PgVectorStore(),
+        CredentialsProvider(_settings),
+        auto_ingest_interval_hours=_settings.auto_ingest_interval_hours,
+    )
