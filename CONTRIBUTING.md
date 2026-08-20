@@ -9,8 +9,13 @@ changes reviewable and well-tested matters more than volume.
 git clone https://github.com/rokbenko/ask-any-channel.git && cd ask-any-channel
 cp .env.example .env   # fill in OPENAI_API_KEY
 docker compose up -d postgres
-uv sync --group dev --extra ui   # --extra ui only needed if you're touching apps/ui/
+uv sync --group dev --extra api   # add --extra ui as well if you're touching apps/ui/
 ```
+
+`--extra api` isn't optional for contributors: `tests/test_api.py` imports
+`fastapi.testclient` at module scope, so without it `pytest` dies during *collection* and the
+whole suite never runs. The `ui` extra is only needed to run the Streamlit app or its `AppTest`
+checks — nothing in the test suite imports it.
 
 ## Tests and lint
 
@@ -20,8 +25,12 @@ Run the full battery before opening a PR — it's exactly what CI runs
 ```bash
 uv run ruff format --check .
 uv run ruff check .
-uv run pytest
+uv run --extra api pytest
 ```
+
+`uv run` re-syncs the environment to the flags *it* is given, so the extra is repeated on the
+`pytest` line rather than relied on from the `uv sync` above — the two `ruff` steps run in
+between, which is exactly where dropping it would bite.
 
 For `apps/ui/` changes, also run the script headless
 (`streamlit.testing.v1.AppTest.from_file("apps/ui/Home.py")`) and exercise the failure path,
@@ -31,11 +40,13 @@ not just the initial render — a green render pass alone has missed real bugs h
 
 These are enforced (by tests or by review), not suggestions:
 
-- **All logic lives in `core/`.** `cli/` and `apps/ui/` are thin clients — they assemble
-  arguments/render widgets and call `core`, nothing else. `tests/test_ui_isolation.py`
-  AST-parses `apps/ui/**/*.py` for `openai`/`anthropic`/`psycopg` imports (there should be
-  none) and `core/**/*.py` for `streamlit` imports (also none) — a PR that fails either check
-  needs the logic moved into `core/`, not the check relaxed.
+- **All logic lives in `core/`.** `cli/`, `apps/ui/`, and `apps/api/` are thin clients — they
+  assemble arguments/render widgets/serialize responses and call `core`, nothing else.
+  `tests/test_ui_isolation.py` AST-parses `apps/ui/**/*.py` and `apps/api/**/*.py` for
+  `openai`/`anthropic`/`psycopg` imports (there should be none) and `core/**/*.py` for
+  `streamlit`/`fastapi`/`pydantic`/`uvicorn` imports (also none) — a PR that fails any of these
+  needs the logic moved into `core/`, not the check relaxed. This is what keeps the UI and the
+  HTTP API interchangeable clients rather than one depending on the other.
 - **Don't bypass the seams.** `core/store/base.py` (`VectorStore`), `core/providers/base.py`
   (`LLMProvider`), and `core/credentials.py` (`CredentialsProvider`) are the only places SQL,
   vendor SDK calls, and API keys are allowed to live, respectively.
