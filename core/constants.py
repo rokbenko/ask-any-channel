@@ -84,6 +84,18 @@ STYLE_PROFILE_MAX_CHARS = 6000
 # auto-update scheduler's post-update refresh) — not an exact science, just a cheap proxy.
 PERSONA_STALE_GROWTH_RATIO = 0.25
 
+# Multi-channel chat retrieval (core/chat/answer.py): each selected source gets its own
+# quota of context blocks (top_k // number of sources), floored at this many, so a single
+# large channel can't drown a small one out of the prompt entirely.
+MIN_BLOCKS_PER_SOURCE = 3
+# "Try adding X" detection: a cheap extra vector-mode search over ingested-but-unselected
+# channels, reusing the question embedding (zero extra API cost). A candidate must clear this
+# cosine-similarity floor to be suggested — a nearest neighbour always exists, so without a
+# floor every off-topic question would name some channel. Tuned for text-embedding-3-small;
+# revisit if EMBEDDING_MODEL ever becomes configurable.
+PROBE_TOP_K = 3
+PROBE_MIN_SCORE = 0.35
+
 
 @dataclass(frozen=True)
 class ChatModelPricing:

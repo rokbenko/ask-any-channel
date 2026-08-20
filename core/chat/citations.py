@@ -24,6 +24,9 @@ class Citation:
     url: str
     t_start_s: float
     quote: str
+    channel_id: UUID
+    channel_title: str | None
+    channel_handle: str | None
 
 
 def _snippet(text: str, max_len: int = _QUOTE_SNIPPET_MAX_CHARS) -> str:
@@ -59,5 +62,25 @@ def parse_citations(text: str, context: list[SearchResult]) -> list[Citation]:
             url=build_timestamped_url(chunk.yt_video_id, t_start_s),
             t_start_s=t_start_s,
             quote=_snippet(chunk.text),
+            channel_id=chunk.channel_id,
+            channel_title=chunk.channel_title,
+            channel_handle=chunk.channel_handle,
         )
     return [found[n] for n in sorted(found)]
+
+
+def citation_to_payload(c: Citation) -> dict:
+    """The JSON-serializable shape persisted to messages.citations and returned by the API
+    (core/chat/answer.py and, eventually, apps/api's message responses share this)."""
+    return {
+        "n": c.n,
+        "video_id": str(c.video_id),
+        "yt_video_id": c.yt_video_id,
+        "title": c.title,
+        "url": c.url,
+        "t_start_s": c.t_start_s,
+        "quote": c.quote,
+        "channel_id": str(c.channel_id),
+        "channel_title": c.channel_title,
+        "channel_handle": c.channel_handle,
+    }

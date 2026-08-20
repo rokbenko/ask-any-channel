@@ -63,8 +63,9 @@ class IngestJob:
 @dataclass
 class Chat:
     id: UUID
-    channel_id: UUID
+    voice_channel_id: UUID | None  # None = Neutral
     created_at: datetime
+    source_channel_ids: list[UUID] = field(default_factory=list)  # ordered by chat_sources.position
 
 
 @dataclass
@@ -80,10 +81,11 @@ class Message:
 @dataclass
 class UsageEvent:
     id: UUID
-    channel_id: UUID | None
+    channel_id: UUID | None  # voice channel, else first source — backward-compat single value
     chat_id: UUID | None
     model: str | None
     tokens_in: int | None
     tokens_out: int | None
     est_cost_usd: float | None
     created_at: datetime
+    source_channel_ids: list = field(default_factory=list)  # full scope in effect for this turn

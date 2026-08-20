@@ -98,3 +98,26 @@ def ensure_suggested_questions(
     questions = generate_suggested_questions(chat_provider, model, channel.title, sample_texts)
     store.set_channel_branding(channel.id, {BRANDING_KEY: questions})
     return questions
+
+
+def blend_suggested_questions(
+    lists: list[list[str]], n: int = SUGGESTED_QUESTIONS_COUNT
+) -> list[str]:
+    """Round-robin interleave of each selected channel's own suggested questions (one from
+    each, in turn, repeating), de-duped, capped at n. A single list is returned unchanged
+    (besides the cap) — today's single-channel chip behavior."""
+    seen: set[str] = set()
+    blended: list[str] = []
+    max_len = max((len(lst) for lst in lists), default=0)
+    for i in range(max_len):
+        for lst in lists:
+            if i >= len(lst):
+                continue
+            question = lst[i]
+            if question in seen:
+                continue
+            seen.add(question)
+            blended.append(question)
+            if len(blended) >= n:
+                return blended
+    return blended

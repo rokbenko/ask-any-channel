@@ -3,6 +3,7 @@ from uuid import uuid4
 
 from core.chat.suggestions import (
     BRANDING_KEY,
+    blend_suggested_questions,
     ensure_suggested_questions,
     generate_suggested_questions,
     sanitize_question,
@@ -133,3 +134,36 @@ def test_ensure_returns_empty_without_persisting_when_no_chat_key():
 
     assert result == []
     assert BRANDING_KEY not in store.get_channel(channel.id).branding  # retried once key exists
+
+
+# --- blend_suggested_questions (multi-channel chip mix) ---------------------------------
+
+
+def test_blend_single_list_is_returned_unchanged_besides_the_cap():
+    assert blend_suggested_questions([["a", "b", "c"]], n=5) == ["a", "b", "c"]
+
+
+def test_blend_round_robins_across_lists():
+    blended = blend_suggested_questions([["a1", "a2", "a3"], ["b1", "b2", "b3"]], n=6)
+    assert blended == ["a1", "b1", "a2", "b2", "a3", "b3"]
+
+
+def test_blend_dedupes_identical_questions_across_lists():
+    blended = blend_suggested_questions([["same?", "a2"], ["same?", "b2"]], n=6)
+    assert blended.count("same?") == 1
+
+
+def test_blend_caps_at_n():
+    blended = blend_suggested_questions([["a1", "a2", "a3"], ["b1", "b2", "b3"]], n=3)
+    assert len(blended) == 3
+    assert blended == ["a1", "b1", "a2"]
+
+
+def test_blend_handles_unequal_length_lists():
+    blended = blend_suggested_questions([["a1"], ["b1", "b2", "b3"]], n=10)
+    assert blended == ["a1", "b1", "b2", "b3"]
+
+
+def test_blend_empty_lists_returns_empty():
+    assert blend_suggested_questions([], n=5) == []
+    assert blend_suggested_questions([[], []], n=5) == []

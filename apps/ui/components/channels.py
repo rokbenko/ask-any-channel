@@ -9,6 +9,7 @@ import streamlit as st
 
 from apps.ui import state
 from apps.ui.components._common import fail
+from core.chat.scope import default_voice
 from core.config import get_settings
 from core.constants import MAX_INGEST_LIMIT, WORKER_STALL_WARNING_S
 from core.credentials import CredentialError, CredentialsProvider
@@ -185,7 +186,7 @@ def render_channel_card(
 
         action_cols = st.columns(4)
         if action_cols[0].button("Chat", key=f"chat-{channel.id}"):
-            state.ensure_channel(channel.id)
+            state.start_scope([channel.id], default_voice([channel]))
             st.switch_page("Home.py")
 
         with action_cols[1].popover("Check for new videos"):
@@ -282,8 +283,8 @@ def render_channel_card(
                     logger.exception("delete channel failed for %s", channel.id)
                     st.error("Delete failed — the server log has the traceback.")
                 else:
-                    if state.get_channel_id() == channel.id:
-                        state.clear()  # don't leave chat pointing at a deleted channel
+                    if channel.id in state.get_sources() or channel.id == state.get_voice():
+                        state.clear()  # don't leave the sidebar pointing at a deleted channel
                     _flash(f"Deleted {confirm_target}.")
                     st.rerun()
 

@@ -8,7 +8,7 @@ from core.constants import DEFAULT_RETRIEVAL_MODE, EMBEDDING_DIM
 from core.search.hybrid import prepare_lexical_query, rrf_fuse
 from core.store.base import SearchResult
 from tests.fakes import FakeLLMProvider, FakeVectorStore, make_chat_chunks
-from tests.test_chat_answer import CHAT_ID, _make_channel
+from tests.test_chat_answer import CHAT_ID, _make_channel, _seed_chat
 
 _ENV_VARS = (
     "DATABASE_URL",
@@ -163,6 +163,7 @@ def test_fake_store_search_scopes_results_to_requested_channel_ids():
 def test_answer_passes_query_text_and_mode_through_to_search():
     channel = _make_channel()
     store = FakeVectorStore(channel=channel)
+    _seed_chat(store, source_channel_ids=[channel.id])
     embedding_provider = FakeLLMProvider(embedding_dim=EMBEDDING_DIM)
     chat_provider = FakeLLMProvider(
         embedding_dim=EMBEDDING_DIM, stream_chunks=make_chat_chunks(["ok"])
@@ -172,7 +173,6 @@ def test_answer_passes_query_text_and_mode_through_to_search():
         store,
         embedding_provider,
         chat_provider,
-        channel_id=channel.id,
         chat_id=CHAT_ID,
         user_text="what is the CLOSER framework?",
         chat_model="gpt-4.1-mini",

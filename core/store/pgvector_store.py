@@ -452,6 +452,14 @@ class PgVectorStore:
             row = cur.fetchone()
         return Channel(**row) if row else None
 
+    def get_channels(self, channel_ids: list[UUID]) -> list[Channel]:
+        if not channel_ids:
+            return []
+        with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
+            cur.execute("SELECT * FROM channels WHERE id = ANY(%s)", (channel_ids,))
+            by_id = {row["id"]: Channel(**row) for row in cur.fetchall()}
+        return [by_id[cid] for cid in channel_ids if cid in by_id]
+
     def list_channels(self) -> list[ChannelSummary]:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
@@ -605,27 +613,82 @@ class PgVectorStore:
     def delete_channel(self, channel_id: UUID) -> None:
         with get_connection() as conn:
             conn.execute("DELETE FROM channels WHERE id = %s", (channel_id,))
+            # chat_sources rows for this channel cascaded away with the DELETE above (FK
+            # ON DELETE CASCADE); a chat left with zero sources is meaningless — remove it too
+            # (its messages cascade; any usage_events survive with FKs already nulled).
+            conn.execute(
+                """
+                DELETE FROM chats c
+                WHERE NOT EXISTS (SELECT 1 FROM chat_sources s WHERE s.chat_id = c.id)
+                """
+            )
 
-    def create_chat(self, *, channel_id: UUID) -> Chat:
+    def create_chat(self, *, source_channel_ids: list[UUID], voice_channel_id: UUID | None) -> Chat:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("INSERT INTO chats (channel_id) VALUES (%s) RETURNING *", (channel_id,))
+            cur.execute(
+                "INSERT INTO chats (voice_channel_id) VALUES (%s) RETURNING id, created_at",
+                (voice_channel_id,),
+            )
             row = cur.fetchone()
-        return Chat(**row)
+            cur.executemany(
+                "INSERT INTO chat_sources (chat_id, channel_id, position) VALUES (%s, %s, %s)",
+                [(row["id"], cid, i) for i, cid in enumerate(source_channel_ids)],
+            )
+        return Chat(
+            id=row["id"],
+            voice_channel_id=voice_channel_id,
+            created_at=row["created_at"],
+            source_channel_ids=list(source_channel_ids),
+        )
 
     def get_chat(self, chat_id: UUID) -> Chat | None:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
-            cur.execute("SELECT * FROM chats WHERE id = %s", (chat_id,))
+            cur.execute(
+                """
+                SELECT c.id, c.voice_channel_id, c.created_at,
+                       COALESCE(
+                           array_agg(s.channel_id ORDER BY s.position)
+                               FILTER (WHERE s.channel_id IS NOT NULL),
+                           '{}'
+                       ) AS source_channel_ids
+                FROM chats c
+                LEFT JOIN chat_sources s ON s.chat_id = c.id
+                WHERE c.id = %s
+                GROUP BY c.id
+                """,
+                (chat_id,),
+            )
             row = cur.fetchone()
         return Chat(**row) if row else None
 
-    def list_chats(self, *, channel_id: UUID, limit: int = 50) -> list[ChatSummary]:
+    def set_chat_scope(
+        self, chat_id: UUID, *, source_channel_ids: list[UUID], voice_channel_id: UUID | None
+    ) -> Chat:
+        with get_connection() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chats SET voice_channel_id = %s WHERE id = %s",
+                (voice_channel_id, chat_id),
+            )
+            cur.execute("DELETE FROM chat_sources WHERE chat_id = %s", (chat_id,))
+            cur.executemany(
+                "INSERT INTO chat_sources (chat_id, channel_id, position) VALUES (%s, %s, %s)",
+                [(chat_id, cid, i) for i, cid in enumerate(source_channel_ids)],
+            )
+        return self.get_chat(chat_id)
+
+    def list_chats(self, *, channel_id: UUID | None = None, limit: int = 50) -> list[ChatSummary]:
         # Inner (not left) lateral join: a chat with no user message yet — one whose first turn
         # failed before anything was persisted — is not listed. Rather than guaranteeing such
-        # rows never exist, they're simply invisible, and cascade away with the channel.
+        # rows never exist, they're simply invisible, and cascade away with their last source.
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
-                SELECT c.id, c.channel_id, c.created_at, fm.content AS title
+                SELECT c.id, c.created_at, c.voice_channel_id, fm.content AS title,
+                       COALESCE(
+                           array_agg(s.channel_id ORDER BY s.position)
+                               FILTER (WHERE s.channel_id IS NOT NULL),
+                           '{}'
+                       ) AS source_channel_ids
                 FROM chats c
                 JOIN LATERAL (
                     SELECT content FROM messages m
@@ -633,7 +696,12 @@ class PgVectorStore:
                     ORDER BY m.created_at ASC
                     LIMIT 1
                 ) fm ON true
-                WHERE c.channel_id = %(channel_id)s
+                LEFT JOIN chat_sources s ON s.chat_id = c.id
+                WHERE %(channel_id)s::uuid IS NULL OR EXISTS (
+                    SELECT 1 FROM chat_sources s2
+                    WHERE s2.chat_id = c.id AND s2.channel_id = %(channel_id)s
+                )
+                GROUP BY c.id, c.created_at, c.voice_channel_id, fm.content
                 ORDER BY c.created_at DESC
                 LIMIT %(limit)s
                 """,
@@ -649,9 +717,10 @@ class PgVectorStore:
             summaries.append(
                 ChatSummary(
                     id=row["id"],
-                    channel_id=row["channel_id"],
                     title=title,
                     created_at=row["created_at"],
+                    source_channel_ids=list(row["source_channel_ids"]),
+                    voice_channel_id=row["voice_channel_id"],
                 )
             )
         return summaries
@@ -693,16 +762,26 @@ class PgVectorStore:
         tokens_in: int | None,
         tokens_out: int | None,
         est_cost_usd: float | None,
+        source_channel_ids: list[UUID] | None = None,
     ) -> UsageEvent:
         with get_connection() as conn, conn.cursor(row_factory=dict_row) as cur:
             cur.execute(
                 """
                 INSERT INTO usage_events
-                    (channel_id, chat_id, model, tokens_in, tokens_out, est_cost_usd)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                    (channel_id, chat_id, model, tokens_in, tokens_out, est_cost_usd,
+                     source_channel_ids)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
                 """,
-                (channel_id, chat_id, model, tokens_in, tokens_out, est_cost_usd),
+                (
+                    channel_id,
+                    chat_id,
+                    model,
+                    tokens_in,
+                    tokens_out,
+                    est_cost_usd,
+                    Jsonb([str(cid) for cid in source_channel_ids or []]),
+                ),
             )
             row = cur.fetchone()
         return UsageEvent(**row)

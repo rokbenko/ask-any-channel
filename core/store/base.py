@@ -65,9 +65,10 @@ class ChannelSummary:
 @dataclass
 class ChatSummary:
     id: UUID
-    channel_id: UUID
     title: str | None  # derived from the first user message, truncated ~60 chars
     created_at: datetime
+    source_channel_ids: list[UUID]
+    voice_channel_id: UUID | None  # None = Neutral
 
 
 class ActiveJobExistsError(RuntimeError):
@@ -185,6 +186,11 @@ class VectorStore(Protocol):
 
     def get_channel(self, channel_id: UUID) -> Channel | None: ...
 
+    def get_channels(self, channel_ids: list[UUID]) -> list[Channel]:
+        """Channels found for the given ids, in the SAME order as channel_ids — missing ids are
+        simply absent from the result (the caller decides whether that's an error)."""
+        ...
+
     def list_channels(self) -> list[ChannelSummary]: ...
 
     def list_processed_video_ids(self, channel_id: UUID) -> set[str]:
@@ -215,13 +221,31 @@ class VectorStore(Protocol):
 
     def count_channel_chunks(self, channel_id: UUID) -> int: ...
 
-    def delete_channel(self, channel_id: UUID) -> None: ...
+    def delete_channel(self, channel_id: UUID) -> None:
+        """Cascades videos/chunks/jobs (FK). chat_sources rows for this channel cascade too;
+        chats.voice_channel_id is nulled (falls back to Neutral) rather than deleting the chat.
+        A chat left with zero sources after that is deleted explicitly (its messages cascade;
+        usage_events survive with their FKs nulled, same as a direct channel delete always
+        did)."""
+        ...
 
-    def create_chat(self, *, channel_id: UUID) -> Chat: ...
+    def create_chat(
+        self, *, source_channel_ids: list[UUID], voice_channel_id: UUID | None
+    ) -> Chat: ...
 
     def get_chat(self, chat_id: UUID) -> Chat | None: ...
 
-    def list_chats(self, *, channel_id: UUID, limit: int = 50) -> list[ChatSummary]: ...
+    def set_chat_scope(
+        self, chat_id: UUID, *, source_channel_ids: list[UUID], voice_channel_id: UUID | None
+    ) -> Chat:
+        """Replaces a chat's knowledge scope and voice — sources/voice are editable on an
+        already-open chat, not fixed at creation."""
+        ...
+
+    def list_chats(self, *, channel_id: UUID | None = None, limit: int = 50) -> list[ChatSummary]:
+        """channel_id=None lists every chat (the sidebar's case — chats aren't scoped to one
+        channel anymore); a channel_id filters to chats that have it among their sources."""
+        ...
 
     def list_messages(self, chat_id: UUID) -> list[Message]: ...
 
@@ -243,4 +267,5 @@ class VectorStore(Protocol):
         tokens_in: int | None,
         tokens_out: int | None,
         est_cost_usd: float | None,
+        source_channel_ids: list[UUID] | None = None,
     ) -> UsageEvent: ...

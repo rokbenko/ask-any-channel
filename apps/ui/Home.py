@@ -18,7 +18,8 @@ store = PgVectorStore()
 
 try:
     channels = store.list_channels()
-    state.restore_from_url(store)  # no-op unless this is a fresh session (refresh / shared link)
+    # no-op unless this is a fresh session (refresh / shared link)
+    state.restore_from_url(store, channels)
 except Exception as exc:
     st.error(str(exc))
     st.stop()
@@ -28,7 +29,4 @@ if not channels:
     st.stop()
 
 sidebar.render(store, channels)
-
-channel_id = state.get_channel_id()
-chat_id = state.get_chat_id()
-chat.render(store, channel_id, chat_id)
+chat.render(store, channels)

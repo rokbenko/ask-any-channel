@@ -8,16 +8,18 @@ from uuid import UUID, uuid4
 
 from core.models import Channel, Chat, IngestJob, Message, UsageEvent, Video
 from core.providers.base import ChatChunk, ChatResponse, ChatUsage
-from core.store.base import ActiveJobExistsError
+from core.store.base import ActiveJobExistsError, ChannelSummary, ChatSummary
 
 _ACTIVE = ("queued", "running")
+_CHAT_TITLE_MAX_CHARS = 60
 
 
 class FakeVectorStore:
-    """`channel` is the one channel this store knows about up front; every chat_id it's asked
-    about is treated as belonging to that channel unless `chat_channel_id` says otherwise (for
-    the tenant-check test). `messages`, `usage_events`, `channels`, `videos`, `chats`, and `jobs`
-    are public so tests can assert on persistence directly."""
+    """`channel` is the one channel this store knows about up front (tests seed more via
+    `channels[c.id] = c` or `upsert_channel`). `messages`, `usage_events`, `channels`, `videos`,
+    `chats`, and `jobs` are public so tests can assert on persistence directly. Chats are never
+    synthesized on lookup (unlike the single-channel-chat era) — tests create them explicitly
+    via `create_chat`, since a chat's scope/voice must actually mean something."""
 
     def __init__(
         self,
@@ -25,11 +27,9 @@ class FakeVectorStore:
         channel: Channel | None = None,
         search_results=None,
         history=None,
-        chat_channel_id: UUID | None = None,
         style_sample_chunk_texts: dict | None = None,
     ):
         self._search_results = search_results or []
-        self._chat_channel_id = chat_channel_id
         self.search_calls: list[dict] = []
         self.style_sample_chunk_texts: dict[UUID, list[str]] = style_sample_chunk_texts or {}
         self.messages: list[Message] = list(history or [])
@@ -46,6 +46,9 @@ class FakeVectorStore:
     def get_channel(self, channel_id):
         return self.channels.get(channel_id)
 
+    def get_channels(self, channel_ids) -> list[Channel]:
+        return [self.channels[cid] for cid in channel_ids if cid in self.channels]
+
     def get_channel_by_handle_or_id(self, ref: str) -> Channel | None:
         bare = ref.lstrip("@")
         for c in self.channels.values():
@@ -54,18 +57,34 @@ class FakeVectorStore:
         return None
 
     def get_chat(self, chat_id):
-        if chat_id in self.chats:
-            return self.chats[chat_id]
-        if not self.channels:
-            return None
-        channel_id = self._chat_channel_id or next(iter(self.channels))
-        return Chat(id=chat_id, channel_id=channel_id, created_at=datetime.now(UTC))
+        return self.chats.get(chat_id)
 
     def search(self, *, channel_ids, query_embedding, top_k, query_text=None, mode=None):
         self.search_calls.append(
-            {"channel_ids": list(channel_ids), "query_text": query_text, "mode": mode}
+            {
+                "channel_ids": list(channel_ids),
+                "query_text": query_text,
+                "mode": mode,
+                "top_k": top_k,
+            }
         )
         return [r for r in self._search_results if r.channel_id in channel_ids][:top_k]
+
+    def list_channels(self):
+        return [
+            ChannelSummary(
+                channel=c,
+                video_count=sum(1 for v in self.videos.values() if v.channel_id == c.id),
+                embedded_video_count=sum(
+                    1
+                    for v in self.videos.values()
+                    if v.channel_id == c.id and v.status == "embedded"
+                ),
+                chunk_count=len(self.style_sample_chunk_texts.get(c.id, [])),
+                last_updated_at=None,
+            )
+            for c in self.channels.values()
+        ]
 
     def sample_embedding_dim(self) -> int | None:
         # Mirrors PgVectorStore: dimension of one stored embedding, None if nothing is stored.
@@ -83,7 +102,15 @@ class FakeVectorStore:
         return message
 
     def record_usage_event(
-        self, *, channel_id, chat_id, model, tokens_in, tokens_out, est_cost_usd
+        self,
+        *,
+        channel_id,
+        chat_id,
+        model,
+        tokens_in,
+        tokens_out,
+        est_cost_usd,
+        source_channel_ids=None,
     ):
         event = UsageEvent(
             id=uuid4(),
@@ -94,6 +121,7 @@ class FakeVectorStore:
             tokens_out=tokens_out,
             est_cost_usd=est_cost_usd,
             created_at=datetime.now(UTC),
+            source_channel_ids=list(source_channel_ids or []),
         )
         self.usage_events.append(event)
         return event
@@ -176,19 +204,74 @@ class FakeVectorStore:
     def count_channel_chunks(self, channel_id) -> int:
         return len(self.style_sample_chunk_texts.get(channel_id, []))
 
-    def create_chat(self, *, channel_id):
-        chat = Chat(id=uuid4(), channel_id=channel_id, created_at=datetime.now(UTC))
+    def create_chat(self, *, source_channel_ids, voice_channel_id):
+        chat = Chat(
+            id=uuid4(),
+            voice_channel_id=voice_channel_id,
+            created_at=datetime.now(UTC),
+            source_channel_ids=list(source_channel_ids),
+        )
         self.chats[chat.id] = chat
         return chat
 
+    def set_chat_scope(self, chat_id, *, source_channel_ids, voice_channel_id):
+        chat = self.chats[chat_id]
+        updated = replace(
+            chat,
+            voice_channel_id=voice_channel_id,
+            source_channel_ids=list(source_channel_ids),
+        )
+        self.chats[chat_id] = updated
+        return updated
+
+    def list_chats(self, *, channel_id=None, limit=50):
+        # Mirrors the real store's inner-lateral-join semantics: a chat with no user message
+        # yet is invisible. Title = first user message, truncated ~60 chars.
+        summaries = []
+        for chat in sorted(self.chats.values(), key=lambda c: c.created_at, reverse=True):
+            if channel_id is not None and channel_id not in chat.source_channel_ids:
+                continue
+            first_user_message = next(
+                (m for m in self.messages if m.chat_id == chat.id and m.role == "user"), None
+            )
+            if first_user_message is None:
+                continue
+            title = first_user_message.content
+            if len(title) > _CHAT_TITLE_MAX_CHARS:
+                title = title[: _CHAT_TITLE_MAX_CHARS - 1].rstrip() + "…"
+            summaries.append(
+                ChatSummary(
+                    id=chat.id,
+                    title=title,
+                    created_at=chat.created_at,
+                    source_channel_ids=list(chat.source_channel_ids),
+                    voice_channel_id=chat.voice_channel_id,
+                )
+            )
+            if len(summaries) >= limit:
+                break
+        return summaries
+
     def delete_channel(self, channel_id) -> None:
-        """Mirrors the real schema's FK behavior (core/db/migrations/0001_init.sql): videos/
-        chats/messages/jobs cascade away, usage_events survive with their FKs nulled."""
+        """Mirrors the real schema's FK behavior (core/db/migrations/0001_init.sql +
+        0007_chat_scope.sql): videos/jobs cascade away; a chat's membership in this channel's
+        chat_sources is dropped and its voice falls back to Neutral if it pointed here; a chat
+        left with zero sources is then deleted (its messages cascade); usage_events survive
+        with channel_id/chat_id FKs nulled (source_channel_ids is plain jsonb, untouched)."""
         self.channels.pop(channel_id, None)
         self.videos = {vid: v for vid, v in self.videos.items() if v.channel_id != channel_id}
 
-        orphaned_chat_ids = {c.id for c in self.chats.values() if c.channel_id == channel_id}
-        self.chats = {cid: c for cid, c in self.chats.items() if c.channel_id != channel_id}
+        orphaned_chat_ids: set[UUID] = set()
+        for chat_id, chat in list(self.chats.items()):
+            remaining_sources = [cid for cid in chat.source_channel_ids if cid != channel_id]
+            voice = None if chat.voice_channel_id == channel_id else chat.voice_channel_id
+            if not remaining_sources:
+                orphaned_chat_ids.add(chat_id)
+                del self.chats[chat_id]
+            else:
+                self.chats[chat_id] = replace(
+                    chat, source_channel_ids=remaining_sources, voice_channel_id=voice
+                )
         self.messages = [m for m in self.messages if m.chat_id not in orphaned_chat_ids]
 
         self.jobs = {jid: j for jid, j in self.jobs.items() if j.channel_id != channel_id}
