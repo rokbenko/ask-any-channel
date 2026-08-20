@@ -10,7 +10,7 @@ from typer.testing import CliRunner
 from cli.main import app
 from core import doctor
 from core.config import get_settings
-from core.constants import EMBEDDING_DIM
+from core.constants import EMBEDDING_DIM, TOOL_VERSION
 from core.db.migrate import MigrationError, describe_migration_error
 
 _BASE_ENV = {
@@ -284,4 +284,4 @@ def test_version_flag_prints_version_without_touching_anything():
     result = CliRunner().invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert "0.1.0" in result.output
+    assert TOOL_VERSION in result.output

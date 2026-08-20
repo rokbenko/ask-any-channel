@@ -18,7 +18,7 @@ RAW_CAPTIONS_DIR = "data/raw"
 DATASETS_DIR = "datasets"
 DATASET_SCHEMA_VERSION = 1
 REGISTRY_PATH = "registry/channels.json"
-TOOL_VERSION = "0.1.0"  # mirrors pyproject.toml [project].version; bump both together
+TOOL_VERSION = "0.2.0"  # mirrors pyproject.toml [project].version; bump both together
 
 # Approximate text-embedding-3-small list price; for the CLI's post-build cost estimate
 # only, not billing-accurate. Check platform.openai.com/pricing for current rates.

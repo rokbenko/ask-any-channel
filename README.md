@@ -88,19 +88,36 @@ logs -f worker` shows what the ingest is doing.
 - **Answers with receipts.** Every response cites `[n]` markers to the exact video and
   timestamp (`youtube.com/watch?v={id}&t={seconds}s`), and expands into an embedded player
   seeked to that moment. Off-topic questions get an honest refusal, not an invented answer.
+- **Chat across creators, in whichever voice you pick.** A chat has a **Sources** set (any
+  subset of your ingested channels) and a **Voice** (Neutral, or one selected creator speaking
+  first-person in a style profile derived from their own videos). Substance always comes from
+  retrieval; voice only changes delivery. Example — sources = Alex Hormozi + Dan Martell, voice
+  = Alex: *"Here's the deal — [Alex's take, first person, cited]. Now, Dan Martell would push
+  back here: [Dan's take, attributed by name, cited]."* Every voice discloses itself as an AI
+  ("AI trained on {name}'s public videos — not {name}.") and never claims to be the real
+  person. See [Chat](#chat) below.
+- **Hybrid retrieval.** Vector search (pgvector) fused with full-text search (RRF) by default
+  — catches exact names, numbers, and framework titles a channel uses verbatim that pure vector
+  similarity can miss. `aac retrieval compare` shows the difference on a real question.
+  Configurable via `RETRIEVAL_MODE`.
 - **Self-hosted, bring-your-own-keys.** No accounts, no telemetry, no hosted tier. Your API
   keys, your Postgres, your machine. Loopback-only ports by default.
 - **Cheap.** Ingesting a channel is cents in embeddings (20 TED talks ≈ 65k tokens ≈ $0.001);
   a chat turn is a fraction of a cent on the default model.
-- **Incremental updates.** "Check for new videos" only processes what's new, so keeping a
-  channel current costs almost nothing.
+- **Updates itself if you want.** "Check for new videos" is one click; per-channel
+  **Auto-update** does it on a schedule (`AUTO_INGEST_INTERVAL_HOURS`, off by default) with no
+  extra process — the existing worker just checks periodically.
 - **Shareable dataset bundles.** A build produces a portable, versioned bundle anyone can load
   with **zero API keys**; the community [registry](#add-your-favorite-creator) indexes what's
-  already been built — metadata only, transcripts never leave your machine.
+  already been built — metadata only, transcripts never leave your machine. Voice profiles stay
+  local to your instance and are never included.
 - **OpenAI or Anthropic for chat**, streaming, switchable per `CHAT_PROVIDER`; either can be
   pointed at a compatible endpoint you run yourself.
-- **Diagnosable.** `aac doctor` explains a broken setup in one line per problem, and the worker
-  and UI run the same checks at boot.
+- **Embed it anywhere.** An optional FastAPI HTTP API ([docs/api.md](docs/api.md)) streams the
+  same grounded, multi-source, voiced answers over SSE — the Streamlit UI is one client of
+  `core`, not the only one.
+- **Diagnosable.** `aac doctor` explains a broken setup in one line per problem, and every
+  process (worker, UI, API) runs the same checks at boot.
 
 ## How it works
 
@@ -124,8 +141,9 @@ how channels get shared without sharing transcripts.
 ```mermaid
 flowchart LR
     UI["apps/ui/<br/>(Streamlit)"] --> Core["core/<br/>(all logic)"]
+    API["apps/api/<br/>(FastAPI, optional)"] --> Core
     CLI["aac CLI"] --> Core
-    Worker["core/worker/<br/>(polling daemon)"] --> Core
+    Worker["core/worker/<br/>(polling daemon + scheduler)"] --> Core
     Worker -->|fetch captions| YouTube[(YouTube)]
     Core -->|embeddings| OpenAI[(OpenAI)]
     Core -->|chat, per CHAT_PROVIDER| ChatLLM[(OpenAI or Anthropic)]
@@ -133,20 +151,25 @@ flowchart LR
     Core -.->|build / load| Bundles[["dataset bundles<br/>(local, gitignored)"]]
 ```
 
-- **`core/`** — all logic: ingestion, chunking, retrieval, chat orchestration + citation
-  parsing, job lifecycle (enqueue/dedupe/retry/cancel), provider + credentials seams, dataset
+- **`core/`** — all logic: ingestion, chunking, hybrid retrieval, chat orchestration (multi-
+  source scope + voice) + citation parsing, corpus-derived voice profiles, job lifecycle
+  (enqueue/dedupe/retry/cancel/auto-update scheduling), provider + credentials seams, dataset
   bundling, environment diagnostics (`core/doctor.py`).
-- **`cli/`** — the `aac` Typer CLI (`ingest`, `search`, `status`, `worker`, `doctor`,
-  `dataset`, `registry`) — an advanced/contributor path; the browser UI covers the everyday
-  flow.
+- **`cli/`** — the `aac` Typer CLI (`ingest`, `search`, `retrieval compare`, `status`, `worker`,
+  `doctor`, `persona`, `dataset`, `registry`) — an advanced/contributor path; the browser UI
+  covers the everyday flow.
 - **`core/db/`** — connection pool plus plain numbered SQL migrations and a small
   dependency-light runner (applied lazily on the first database touch, logged when they run).
 - **`apps/ui/`** — Streamlit app; imports `core` only, zero logic of its own. `Home.py` is
   chat, `pages/1_Channels.py` is add/manage/delete.
+- **`apps/api/`** — optional FastAPI shell over the same `core` (same rule: zero logic of its
+  own); off by default, opt in with `docker compose --profile api up -d`. See
+  [docs/api.md](docs/api.md).
 - **`core/worker/`** — the polling ingest daemon (`aac worker`) that channel-add/update
-  actions in the UI enqueue work for; shares pipeline code with the CLI's inline path.
-- One database for everything: relational data, vectors (pgvector), and the ingestion job
-  queue — no Pinecone, no Redis.
+  actions in the UI enqueue work for, plus the auto-update scheduler that runs inside the same
+  loop; shares pipeline code with the CLI's inline path.
+- One database for everything: relational data, vectors (pgvector), full-text (tsvector), and
+  the ingestion job queue — no Pinecone, no Redis.
 
 ```
 ├── cli/                # aac Typer CLI — thin wrappers over core/
@@ -156,14 +179,17 @@ flowchart LR
 │   ├── db/             # connection pool + numbered SQL migrations (applied lazily)
 │   ├── providers/      # LLMProvider seam — OpenAI + Anthropic, chosen via CHAT_PROVIDER
 │   ├── store/          # VectorStore seam, pgvector implementation
-│   ├── search/         # retrieval
-│   ├── chat/           # grounded prompt, streaming answer, [n] citations, suggested questions
-│   ├── worker/         # polling daemon, shares pipeline code with the CLI
+│   ├── search/         # hybrid (vector + full-text) retrieval, dense/hybrid comparison
+│   ├── persona/        # corpus-derived per-channel voice profiles, instance-only
+│   ├── chat/           # grouped/voiced prompt, streaming answer, [n] citations, suggestions
+│   ├── worker/         # polling daemon + auto-update scheduler, shares pipeline code with the CLI
 │   └── doctor.py       # shared env/DB/key checks — `aac doctor` and boot-time validation
 ├── registry/           # channels.json (community index) + schema.json (its JSON Schema)
 ├── data/raw/           # cached .vtt captions (gitignored)
 ├── datasets/           # local dataset bundles (gitignored — see Dataset bundles)
 ├── apps/ui/            # Streamlit app: Home.py (chat), pages/1_Channels.py (manage)
+├── apps/api/           # optional FastAPI shell — same core, no logic of its own
+├── docs/               # docs/api.md — the HTTP API reference
 └── tests/              # pytest — parsing/chunking/bundle/chat-orchestration/job/doctor logic
 ```
 
@@ -186,6 +212,7 @@ All settings come from `.env` (copy `.env.example` to start) via `core/config.py
 | `RAW_CAPTIONS_DIR` | Where cached `.vtt` caption files are written (default `data/raw`). Gitignored, safe to delete. |
 | `API_TOKEN` | Only used by the optional `api` compose service ([docs/api.md](docs/api.md)). Unset = the HTTP API is open; set it to require a bearer token. |
 | `CORS_ORIGINS` | Comma-separated origins the HTTP API accepts cross-origin requests from. Empty (default) = none. |
+| `AUTO_INGEST_INTERVAL_HOURS` | How often the worker checks channels with "Auto-update" enabled for new videos (default 24; `0` disables it globally). Per-channel auto-update itself defaults off — toggle it on the Channels page. |
 
 Releases are tagged `vX.Y.Z` on `main`; see [CHANGELOG.md](CHANGELOG.md). `aac --version`
 prints the running version.
@@ -260,12 +287,14 @@ database password.
 
 ## Roadmap
 
-- **v0.1** (this release): cited chat, channel management UI, worker with crash recovery,
-  dataset bundles + registry, `aac doctor`.
-- **Next:** a public demo instance; a seeded registry; prebuilt images on GHCR so `docker
-  compose up` pulls instead of builds.
-- **v0.2:** hybrid retrieval (full-text + vector fusion), an HTTP API, per-channel persona
-  configuration, scheduled auto-ingest, configurable embedding model.
+- **v0.1:** cited chat, channel management UI, worker with crash recovery, dataset bundles +
+  registry, `aac doctor`.
+- **v0.2** (this release): hybrid retrieval (vector + full-text fusion), multi-source chat with
+  per-creator voice profiles, an HTTP API for embedding the bot elsewhere, and a scheduled
+  auto-update option per channel.
+- **Next:** cloud mode (hosted, multi-tenant — additive on top of the same `core`, not a
+  rewrite); configurable embedding model; prebuilt images on GHCR so `docker compose up` pulls
+  instead of builds.
 - Ideas and votes welcome in [issues](https://github.com/rokbenko/ask-any-channel/issues).
 
 ## Contributing
@@ -308,13 +337,19 @@ channels:
   enqueues an ingest job; the `worker` service picks it up and processes it.
 - **Live progress** — each channel card auto-refreshes while a job is queued/running, showing
   the current stage and a `done/total` count, with no page reload needed.
-- **Chat** — jumps to Home with that channel selected.
+- **Chat** — jumps to Home with that channel as the only source (and its default voice, if its
+  persona is enabled) — you can widen Sources or change Voice from there.
 - **Check for new videos** — enqueues an incremental update: only videos not already in the
-  channel are processed, so it's cheap even on a large channel.
+  channel are processed, so it's cheap even on a large channel. **Auto-update** does this on
+  its own on a schedule (`AUTO_INGEST_INTERVAL_HOURS`, off per channel by default).
+- **Voice** — enable/disable this channel's voice, mark it family-friendly, add custom
+  instructions, or regenerate its style profile from the channel's own transcripts
+  (`aac persona build` does the same from the CLI).
 - **Delete** — type-to-confirm hard delete: removes the channel's videos/chunks/chats/messages
-  and every local dataset bundle whose manifest names that channel. Past `usage_events` for
-  that channel are preserved (for future billing/attribution), just detached from the deleted
-  channel.
+  and every local dataset bundle whose manifest names that channel. A chat scoped to more than
+  this one channel survives with it removed from its sources (voice falls back to Neutral if it
+  pointed here); past `usage_events` for this channel are preserved (for future billing/
+  attribution), just detached from the deleted channel.
 - A failed job shows its error with a **Retry** button; a queued job can be **Cancelled**. A
   channel that hasn't resolved yet (or never will — a typo'd handle) shows under **Pending
   adds** with the same controls. Only one job runs per channel at a time — adding an
@@ -370,7 +405,10 @@ handles (`'@TED'`) — a bare `@` is splatting syntax there.
 `videos.jsonl`, `chunks.parquet`, and — unless `--skip-embeddings` is passed —
 `embeddings-{model}.parquet`) under `datasets/{channel-slug}/`. Bundles are **local-only**
 and gitignored: nothing under `datasets/` is ever committed, so no transcript content leaves
-your machine unless you choose to share the directory yourself.
+your machine unless you choose to share the directory yourself. Voice profiles, suggested
+questions, and every other per-instance setting stay out of the bundle entirely — a bundle is
+transcript content and nothing else, so loading one on a fresh instance never regenerates
+someone else's voice or settings for you (run `aac persona build` yourself, once, locally).
 
 `registry/channels.json` is a public, metadata-only index (channel, suggested build config,
 video/chunk counts — no transcript text) of channels the community has already built bundles
@@ -385,15 +423,29 @@ above), chat with it in the Streamlit UI (`uv sync --extra ui && uv run streamli
 apps/ui/Home.py`, or via `docker compose --profile ui up -d`, already running if you followed
 the quickstart).
 
-Pick a channel from the sidebar, ask a question, and get a streamed answer with inline
-`[n]` citations — each links to the exact video + timestamp and expands to an embedded
-player that starts right there. Off-topic questions get an honest "the channel doesn't
-cover this" instead of an invented answer. A fresh chat shows a handful of clickable
-suggested starter questions, generated from the channel's most-watched videos with one small
-chat call once a chat key is available (at ingest time if one's configured — never for
-`aac dataset build --skip-embeddings` — lazily on the first visit otherwise). Questions that
-travel inside a shared bundle are validated and sanitized on load like every other bundle
-field.
+Pick your **Sources** (any subset of your ingested channels, all selected by default) and your
+**Voice** (Neutral, or one selected creator) from the sidebar, ask a question, and get a
+streamed answer with inline `[n]` citations — each links to the exact video + timestamp and
+expands to an embedded player that starts right there. With more than one source selected,
+citations are labeled with the creator they came from. Off-topic questions get an honest "the
+selected sources don't cover this" instead of an invented answer, and if another ingested
+channel looks like it might, the answer says so. Sources and Voice are editable on an already-
+open chat, and the chats list shows each chat's scope/voice as a badge. A fresh chat shows a
+handful of clickable suggested starter questions blended from the selected channels, generated
+with one small chat call once a chat key is available (at ingest time if one's configured —
+never for `aac dataset build --skip-embeddings` — lazily on the first visit otherwise).
+Questions that travel inside a shared bundle are validated and sanitized on load like every
+other bundle field.
+
+**Voice** picks one selected creator to answer in the first person, in a style profile derived
+from their own videos (`aac persona build <channel>`, or "Regenerate voice" on the Channels
+page) — tone, catchphrases, how they name their own frameworks. Substance still comes only
+from retrieval: the voice's own material is delivered first-person, and every other selected
+creator's material is explicitly attributed by name, never absorbed. Every voice discloses
+itself honestly — asked "are you {name}?" it says no, an AI trained on their public videos, and
+that disclosure is always shown. Voice profiles are instance-only: they're derived locally in
+one command and never travel in a dataset bundle or a registry entry, so nothing about how a
+creator "sounds" is shared beyond your own machine.
 
 `CHAT_PROVIDER` (`openai` or `anthropic`) picks which vendor answers chat turns;
 `CHAT_MODEL` overrides the default model for that provider. Embedding the question always

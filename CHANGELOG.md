@@ -4,6 +4,41 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions are tagged `vX.Y.Z` on
 `main`.
 
+## [0.2.0] — 2026-08-20
+
+### Added
+
+- Hybrid retrieval: vector search fused with full-text search (Reciprocal Rank Fusion) via a
+  new generated `tsvector` column and GIN index on `chunks`, on by default (`RETRIEVAL_MODE`,
+  `hybrid`/`dense`). `aac retrieval compare` shows dense vs. hybrid rankings side by side, and
+  `VectorStore.search()` now accepts a list of channel ids, scoping a query across any subset
+  of ingested channels.
+- Corpus-derived voice profiles (`core/persona/`): `aac persona build <channel>` (or
+  "Regenerate voice" in the UI) samples a channel's own transcripts and asks the configured
+  chat model for an editable style profile (tone, catchphrases, how it names its own
+  frameworks). Per-channel `enabled`/`family_friendly`/custom-instructions settings, and a
+  non-negotiable honesty guardrail on every voice: never claims to be the real person, and
+  discloses itself ("AI trained on {name}'s public videos — not {name}."). Instance-only —
+  never written into dataset bundles or registry entries.
+- Multi-channel chat: a chat now has an independent **Sources** set (any subset of ingested
+  channels) and **Voice** (Neutral, or one selected creator answering first-person in their
+  style), both editable on an already-open chat. Context is retrieved per source and grouped/
+  labeled by creator in the prompt; a selected creator's own material is delivered first-
+  person, every other selected creator's material is explicitly attributed by name, never
+  absorbed. A question none of the selected sources cover is refused, with a suggestion to add
+  another ingested-but-unselected channel when it looks relevant.
+- FastAPI HTTP API (`apps/api/`, opt-in via `docker compose --profile api up -d`, port 8000
+  loopback-only): `GET /channels`, `POST /chats` + `GET/POST /chats/{id}/messages` (SSE-
+  streamed answers), and a stateless `POST /ask` for embedding the bot on another page. Optional
+  bearer-token auth (`API_TOKEN`) and CORS allowlist (`CORS_ORIGINS`). See
+  [docs/api.md](docs/api.md).
+- Auto-update scheduler: a per-channel "Auto-update" toggle (off by default) makes the existing
+  worker periodically check that channel for new videos on its own
+  (`AUTO_INGEST_INTERVAL_HOURS`), with no new process. An update that adds new videos also
+  refreshes suggested questions and, if the corpus grew enough, the voice profile.
+- `aac status` and the Channels page now show each channel's auto-update state and last-checked
+  time.
+
 ## [0.1.0] — 2026-08-18
 
 ### Added
